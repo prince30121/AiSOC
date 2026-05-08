@@ -19,17 +19,32 @@ Endpoints
 
 from __future__ import annotations
 
+import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.api.v1.deps import AuthUser, DBSession
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/cases", tags=["cases"])
+
+# The agents service owns the actual investigation orchestrator (Pillar-1).
+# We keep the route surface on `/cases/{id}/investigate` and
+# `/cases/{id}/investigations/{run_id}` for the web console and proxy through
+# to the agents service so the front end has a single, stable API origin.
+_AGENTS_URL = (
+    os.getenv("AGENTS_SERVICE_URL")
+    or os.getenv("AGENTS_API_URL")
+    or "http://agents:8084"
+).rstrip("/")
 
 # ────────────────────────────────────────────────────────────────────────────
 # Pydantic schemas
@@ -142,6 +157,68 @@ class EvidenceReport(BaseModel):
     compliance_frameworks: list[str]
     evidence_chain: list[dict[str, Any]]
     generated_at: datetime
+
+
+# Timeline / tasks
+TaskStatus = Literal["todo", "in_progress", "done"]
+
+
+class TimelineEvent(BaseModel):
+    id: str
+    type: str  # 'created' | 'status_change' | 'comment' | 'alert_linked' | 'task'
+    timestamp: datetime
+    title: str
+    description: str | None = None
+    actor: str | None = None
+
+
+class TimelineResponse(BaseModel):
+    events: list[TimelineEvent]
+
+
+class CreateTaskRequest(BaseModel):
+    title: str = Field(..., min_length=1)
+    status: TaskStatus = "todo"
+    assignee: str | None = None
+    due_at: datetime | None = Field(None, alias="dueAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class UpdateTaskRequest(BaseModel):
+    title: str | None = None
+    status: TaskStatus | None = None
+    assignee: str | None = None
+    due_at: datetime | None = Field(None, alias="dueAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class TaskResponse(BaseModel):
+    id: str
+    title: str
+    status: TaskStatus
+    assignee: str | None = None
+    due_at: datetime | None = Field(None, alias="dueAt")
+    created_at: datetime = Field(..., alias="createdAt")
+
+    model_config = {"populate_by_name": True}
+
+
+def _row_to_task(row: Any) -> TaskResponse:
+    return TaskResponse(
+        id=str(row.id),
+        title=row.title,
+        status=row.status,
+        assignee=row.assignee,
+        dueAt=row.due_at,
+        createdAt=row.created_at,
+    )
+
+
+# Investigation proxy schemas (forwarded to the agents service).
+class InvestigateRequest(BaseModel):
+    alert_summary: str | None = ""
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -447,4 +524,323 @@ async def evidence_report(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> 
         compliance_frameworks=list(row.compliance_frameworks or []),
         evidence_chain=list(row.evidence_chain or []),
         generated_at=datetime.now(UTC),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Timeline
+#
+# A flattened activity stream that the case workspace renders on the right.
+# We synthesize the timeline from the case's own state transitions, linked
+# alerts, comments, and tasks so the front end gets one unified view without
+# orchestrating four separate calls.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/{case_id}/timeline", response_model=TimelineResponse, summary="Case activity timeline")
+async def case_timeline(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> TimelineResponse:
+    case_row = (
+        await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+    ).fetchone()
+    if not case_row:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    events: list[TimelineEvent] = []
+
+    # Case creation event
+    events.append(
+        TimelineEvent(
+            id=f"case-{case_row.id}-created",
+            type="created",
+            timestamp=case_row.created_at,
+            title="Case opened",
+            description=case_row.title,
+            actor=case_row.assignee,
+        )
+    )
+
+    # Status / severity reflection (we only surface the latest snapshot here;
+    # full audit history is available via the audit log endpoints).
+    if case_row.updated_at and case_row.updated_at != case_row.created_at:
+        events.append(
+            TimelineEvent(
+                id=f"case-{case_row.id}-status",
+                type="status_change",
+                timestamp=case_row.updated_at,
+                title=f"Status: {case_row.status}",
+                description=f"Severity {case_row.severity}",
+                actor=case_row.assignee,
+            )
+        )
+
+    # Comments
+    comment_rows = (
+        await db.execute(
+            text(
+                "SELECT id, author, body, is_system, created_at "
+                "FROM aisoc_case_comments WHERE case_id = :id ORDER BY created_at"
+            ).bindparams(id=case_id)
+        )
+    ).fetchall()
+    for c in comment_rows:
+        events.append(
+            TimelineEvent(
+                id=f"comment-{c.id}",
+                type="comment",
+                timestamp=c.created_at,
+                title="System note" if c.is_system else "Comment",
+                description=(c.body or "")[:280],
+                actor=c.author,
+            )
+        )
+
+    # Linked alerts (best-effort — we tolerate a missing alerts table)
+    for alert_id in list(case_row.alert_ids or [])[:25]:
+        try:
+            a = (
+                await db.execute(
+                    text(
+                        "SELECT id, title, severity, created_at FROM aisoc_alerts WHERE id = :id"
+                    ).bindparams(id=alert_id)
+                )
+            ).fetchone()
+            if a:
+                events.append(
+                    TimelineEvent(
+                        id=f"alert-{a.id}",
+                        type="alert_linked",
+                        timestamp=a.created_at or case_row.created_at,
+                        title=f"Alert linked: {a.title}",
+                        description=f"Severity {a.severity}",
+                        actor=None,
+                    )
+                )
+        except Exception:  # noqa: BLE001 — alerts table may not exist in some demos
+            continue
+
+    # Tasks
+    try:
+        task_rows = (
+            await db.execute(
+                text(
+                    "SELECT id, title, status, assignee, created_at "
+                    "FROM aisoc_case_tasks WHERE case_id = :id ORDER BY created_at"
+                ).bindparams(id=case_id)
+            )
+        ).fetchall()
+        for t in task_rows:
+            events.append(
+                TimelineEvent(
+                    id=f"task-{t.id}",
+                    type="task",
+                    timestamp=t.created_at,
+                    title=f"Task ({t.status}): {t.title}",
+                    description=None,
+                    actor=t.assignee,
+                )
+            )
+    except Exception:  # noqa: BLE001 — table created by migration 027; tolerate absence
+        logger.exception("aisoc_case_tasks not available; skipping task events")
+
+    events.sort(key=lambda e: e.timestamp)
+    return TimelineResponse(events=events)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tasks
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/{case_id}/tasks", response_model=list[TaskResponse], summary="List case tasks")
+async def list_tasks(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> list[TaskResponse]:
+    exists = (
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+    ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    rows = (
+        await db.execute(
+            text(
+                "SELECT id, title, status, assignee, due_at, created_at "
+                "FROM aisoc_case_tasks WHERE case_id = :id ORDER BY created_at"
+            ).bindparams(id=case_id)
+        )
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+@router.post("/{case_id}/tasks", response_model=TaskResponse, status_code=201, summary="Create task")
+async def create_task(
+    case_id: uuid.UUID,
+    body: CreateTaskRequest,
+    db: DBSession,
+    user: AuthUser,
+) -> TaskResponse:
+    exists = (
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+    ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    task_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO aisoc_case_tasks
+                        (id, case_id, title, status, assignee, due_at, created_at, updated_at, created_by)
+                    VALUES
+                        (:id, :case_id, :title, :status, :assignee, :due_at, :now, :now, :created_by)
+                    RETURNING id, title, status, assignee, due_at, created_at
+                    """
+                ).bindparams(
+                    id=task_id,
+                    case_id=case_id,
+                    title=body.title,
+                    status=body.status,
+                    assignee=body.assignee,
+                    due_at=body.due_at,
+                    now=now,
+                    created_by=str(user) if user else None,
+                )
+            )
+        ).fetchone()
+        await db.commit()
+        return _row_to_task(row)
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+
+@router.patch("/{case_id}/tasks/{task_id}", response_model=TaskResponse, summary="Update task")
+async def update_task(
+    case_id: uuid.UUID,
+    task_id: uuid.UUID,
+    body: UpdateTaskRequest,
+    db: DBSession,
+    user: AuthUser,
+) -> TaskResponse:
+    sets: list[str] = []
+    params: dict[str, Any] = {"id": task_id, "case_id": case_id, "now": datetime.now(UTC)}
+    if body.title is not None:
+        sets.append("title = :title")
+        params["title"] = body.title
+    if body.status is not None:
+        sets.append("status = :status")
+        params["status"] = body.status
+    if body.assignee is not None:
+        sets.append("assignee = :assignee")
+        params["assignee"] = body.assignee
+    if body.due_at is not None:
+        sets.append("due_at = :due_at")
+        params["due_at"] = body.due_at
+    if not sets:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    sets.append("updated_at = :now")
+
+    try:
+        row = (
+            await db.execute(
+                text(
+                    f"""
+                    UPDATE aisoc_case_tasks
+                    SET {", ".join(sets)}
+                    WHERE id = :id AND case_id = :case_id
+                    RETURNING id, title, status, assignee, due_at, created_at
+                    """
+                ).bindparams(**params)
+            )
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        await db.commit()
+        return _row_to_task(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Investigation proxy
+#
+# The investigation orchestrator lives in the agents service. The web console
+# only knows about /api/v1/cases/{id}/..., so we proxy through and keep the
+# external API surface stable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _agents_proxy(method: str, path: str, **kwargs: Any) -> httpx.Response:
+    url = f"{_AGENTS_URL}{path}"
+    timeout = kwargs.pop("timeout", 30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.request(method, url, **kwargs)
+    except httpx.HTTPError as exc:
+        logger.exception("Agents service request failed: %s %s", method, url)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Agents service unavailable: {exc}",
+        ) from exc
+
+
+@router.post("/{case_id}/investigate", summary="Launch investigation for case")
+async def case_investigate(
+    case_id: uuid.UUID,
+    body: InvestigateRequest,
+    db: DBSession,
+    user: AuthUser,
+) -> dict[str, Any]:
+    exists = (
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+    ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    resp = await _agents_proxy(
+        "POST",
+        f"/api/v1/cases/{case_id}/investigate",
+        json={"alert_summary": body.alert_summary or ""},
+    )
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
+@router.get("/{case_id}/investigations/{run_id}", summary="Get investigation run")
+async def case_investigation_run(
+    case_id: uuid.UUID,
+    run_id: str,
+    user: AuthUser,
+) -> dict[str, Any]:
+    resp = await _agents_proxy("GET", f"/api/v1/investigations/{run_id}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
+@router.get(
+    "/{case_id}/investigations/{run_id}/report.pdf",
+    summary="Download investigation PDF report",
+)
+async def case_investigation_pdf(
+    case_id: uuid.UUID,
+    run_id: str,
+    user: AuthUser,
+) -> Response:
+    resp = await _agents_proxy("GET", f"/api/v1/investigations/{run_id}/report.pdf")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "application/pdf"),
+        headers={
+            "Content-Disposition": resp.headers.get(
+                "content-disposition",
+                f'attachment; filename="case-{case_id}-{run_id}.pdf"',
+            ),
+        },
     )

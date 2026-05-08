@@ -22,6 +22,7 @@ from app.api.v1.endpoints import (
     easm,
     feedback,
     federated,
+    fusion,
     hunts,
     identity_timeline,
     knowledge_base,
@@ -135,3 +136,7 @@ api_router.include_router(shifts.router)
 
 # Deployment configuration and air-gap bundle management
 api_router.include_router(deployment.router)
+
+# Fusion gateway: proxies to services/fusion when FUSION_URL is set, otherwise
+# returns graceful empty payloads so the analyst console renders cleanly.
+api_router.include_router(fusion.router)

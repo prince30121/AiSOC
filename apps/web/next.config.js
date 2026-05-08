@@ -16,7 +16,12 @@ const AGENTS_HOST = process.env.AGENTS_URL || 'http://localhost:8001';
 // Fusion service exposes /entity-risk/*, /ml/*, /metrics, /health at root.
 // We surface those to the browser under the same-origin namespace
 // /api/v1/fusion/* so the bundle stays host-agnostic.
-const FUSION_HOST = process.env.FUSION_URL || 'http://localhost:8082';
+//
+// When FUSION_URL is unset (e.g. the demo Fly.io stack with no fusion
+// deployment), the rewrite is omitted entirely so /api/v1/fusion/* falls
+// through to the core API catch-all, which exposes a graceful fusion
+// gateway (services/api/app/api/v1/endpoints/fusion.py).
+const FUSION_HOST = process.env.FUSION_URL || '';
 const ENRICHMENT_HOST = process.env.ENRICHMENT_URL || 'http://localhost:8083';
 
 const nextConfig = {
@@ -142,10 +147,19 @@ const nextConfig = {
       // and ML scoring endpoints at its own root (no /api/v1 prefix on the
       // service side). Proxy /api/v1/fusion/:path* → fusion's /:path* so the
       // browser only ever sees same-origin URLs.
-      {
-        source: '/api/v1/fusion/:path*',
-        destination: `${FUSION_HOST}/:path*`,
-      },
+      //
+      // Only emit the fusion-specific rewrite when FUSION_URL is configured.
+      // Without it, /api/v1/fusion/* falls through to the core API, which
+      // now hosts a fusion gateway that returns graceful empty payloads
+      // when no upstream fusion is reachable.
+      ...(FUSION_HOST
+        ? [
+            {
+              source: '/api/v1/fusion/:path*',
+              destination: `${FUSION_HOST}/:path*`,
+            },
+          ]
+        : []),
       // Catch-all for the core API.
       {
         source: '/api/v1/:path*',
