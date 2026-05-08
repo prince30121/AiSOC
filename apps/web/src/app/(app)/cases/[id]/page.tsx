@@ -1,13 +1,14 @@
 import { CaseWorkspace } from '@/components/cases/CaseWorkspace';
 
 interface CasePageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export const metadata = {
   title: 'Case workspace | AiSOC',
 };
 
-export default function CaseDetailPage({ params }: CasePageProps) {
-  return <CaseWorkspace caseId={params.id} />;
+export default async function CaseDetailPage({ params }: CasePageProps) {
+  const { id } = await params;
+  return <CaseWorkspace caseId={id} />;
 }

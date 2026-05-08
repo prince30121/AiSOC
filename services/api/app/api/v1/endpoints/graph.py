@@ -345,12 +345,23 @@ async def get_entity_neighbors(
 async def get_mitre_coverage(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[MitreCoverageItem]:
-    """Return MITRE ATT&CK technique coverage aggregated from all tenant alerts."""
+    """Return MITRE ATT&CK technique coverage aggregated from all tenant alerts.
+
+    When the Neo4j knowledge graph is unreachable (e.g. in the public demo),
+    this endpoint returns an empty list rather than 503-ing, so the Coverage
+    UI degrades gracefully instead of breaking the whole page.
+    """
     try:
         records = await graph_service.get_mitre_coverage(
             tenant_id=str(current_user.tenant_id),
         )
     except Exception as exc:
+        if _is_graph_unavailable(exc):
+            logger.info(
+                "MITRE coverage: graph backend unavailable, returning empty set",
+                exc_info=False,
+            )
+            return []
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Graph query failed: {exc}",

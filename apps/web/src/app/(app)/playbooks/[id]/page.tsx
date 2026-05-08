@@ -4,14 +4,15 @@ export const metadata = {
   title: 'Playbook Editor | AiSOC',
 };
 
-export default function PlaybookEditorPage({
+export default async function PlaybookEditorPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = await params;
   return (
     <div className="h-full">
-      <PlaybookEditor playbookId={params.id} />
+      <PlaybookEditor playbookId={id} />
     </div>
   );
 }

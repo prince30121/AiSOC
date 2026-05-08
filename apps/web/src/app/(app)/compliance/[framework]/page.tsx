@@ -2,7 +2,7 @@ import { Metadata } from 'next';
 import { FrameworkView } from '@/components/compliance/FrameworkView';
 
 interface Props {
-  params: { framework: string };
+  params: Promise<{ framework: string }>;
 }
 
 const FRAMEWORK_NAMES: Record<string, string> = {
@@ -15,14 +15,16 @@ const FRAMEWORK_NAMES: Record<string, string> = {
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const name = FRAMEWORK_NAMES[params.framework] ?? params.framework.toUpperCase();
+  const { framework } = await params;
+  const name = FRAMEWORK_NAMES[framework] ?? framework.toUpperCase();
   return { title: `${name} Compliance — AiSOC` };
 }
 
-export default function ComplianceFrameworkPage({ params }: Props) {
+export default async function ComplianceFrameworkPage({ params }: Props) {
+  const { framework } = await params;
   return (
     <div className="p-6">
-      <FrameworkView framework={params.framework} />
+      <FrameworkView framework={framework} />
     </div>
   );
 }

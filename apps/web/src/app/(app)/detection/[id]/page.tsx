@@ -1,13 +1,16 @@
 import { RuleEditor } from '@/components/detections/RuleEditor';
 
 interface DetectionEditPageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export const metadata = {
   title: 'Detection rule | AiSOC',
 };
 
-export default function DetectionEditPage({ params }: DetectionEditPageProps) {
-  return <RuleEditor mode="edit" ruleId={params.id} />;
+export default async function DetectionEditPage({
+  params,
+}: DetectionEditPageProps) {
+  const { id } = await params;
+  return <RuleEditor mode="edit" ruleId={id} />;
 }
