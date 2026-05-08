@@ -61,10 +61,11 @@ export const metadata: Metadata = {
     creator: '@aisoc_dev',
   },
   icons: {
-    icon: [
-      { url: '/favicon.svg', type: 'image/svg+xml' },
-      { url: '/favicon.ico', sizes: 'any' },
-    ],
+    // Single SVG favicon — modern browsers (Chrome 80+, Safari 16+, Firefox 41+,
+    // Edge) all support this. We intentionally do not advertise /favicon.ico
+    // because we don't ship a binary .ico file; declaring one only produces
+    // 404s in the browser network tab.
+    icon: [{ url: '/favicon.svg', type: 'image/svg+xml' }],
     apple: [{ url: '/icons/icon-192.svg', type: 'image/svg+xml' }],
   },
   manifest: '/manifest.json',
