@@ -19,7 +19,7 @@ import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.api.v1.dev_auth import (
     DEMO_TENANT_ID,
@@ -533,6 +533,106 @@ async def _seed_alerts_and_cases(session, tenant: Tenant, *, alert_count: int = 
     return len(alerts), len(cases)
 
 
+# Map ORM Case.status → aisoc_cases.status (migration 012 CHECK constraint).
+_AISOC_STATUS_MAP = {
+    "open": "new",
+    "new": "new",
+    "triaged": "triaged",
+    "pending": "triaged",
+    "in_progress": "investigating",
+    "investigating": "investigating",
+    "contained": "contained",
+    "resolved": "resolved",
+    "closed": "closed",
+    "false_positive": "closed",
+}
+
+# Map ORM severity → aisoc_cases.severity (migration 012 CHECK constraint).
+_AISOC_SEVERITY_MAP = {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "info": "info",
+}
+
+
+async def _mirror_cases_to_aisoc(session, tenant: Tenant) -> int:
+    """Mirror ORM ``cases`` rows into the raw-SQL ``aisoc_cases`` table.
+
+    The HTTP API (``/api/v1/cases``) reads from ``aisoc_cases`` (created by
+    migration 012) while the ORM ``Case`` model writes to ``cases``. The two
+    were originally separate features that never got reconciled; this helper
+    keeps the demo dataset visible to the console without forcing a schema
+    migration.
+
+    Idempotent: ``ON CONFLICT (id) DO NOTHING`` so re-runs are no-ops.
+    """
+    rows = (
+        await session.execute(
+            select(Case).where(Case.tenant_id == tenant.id)
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+
+    inserted = 0
+    for c in rows:
+        params = {
+            "id": str(c.id),
+            "tenant_id": str(c.tenant_id),
+            "title": c.title,
+            "description": c.description or c.summary or "",
+            "severity": _AISOC_SEVERITY_MAP.get(c.severity, "medium"),
+            "status": _AISOC_STATUS_MAP.get(c.status, "new"),
+            "assignee": str(c.assigned_to_id) if c.assigned_to_id else None,
+            "mitre_techniques": _json_dumps(c.mitre_techniques or []),
+            "alert_ids": [str(a) for a in (c.alert_ids or [])],
+            "tags": _json_dumps(_tags_to_object(c.tags)),
+            "opened_at": c.created_at,
+            "resolved_at": c.closed_at,
+            "closed_at": c.closed_at,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+            "created_by": "seed",
+        }
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO aisoc_cases (
+                    id, tenant_id, title, description, severity, status,
+                    assignee, mitre_techniques, alert_ids,
+                    opened_at, resolved_at, closed_at,
+                    created_at, updated_at, created_by, tags
+                ) VALUES (
+                    :id, :tenant_id, :title, :description, :severity, :status,
+                    :assignee, CAST(:mitre_techniques AS JSONB), CAST(:alert_ids AS UUID[]),
+                    :opened_at, :resolved_at, :closed_at,
+                    :created_at, :updated_at, :created_by, CAST(:tags AS JSONB)
+                )
+                ON CONFLICT (id) DO NOTHING
+                """
+            ).bindparams(**params)
+        )
+        inserted += result.rowcount or 0
+    return inserted
+
+
+def _json_dumps(value) -> str:
+    import json
+
+    return json.dumps(value, default=str)
+
+
+def _tags_to_object(tags) -> dict:
+    """ORM stores tags as a list[str]; aisoc_cases.tags is JSONB object."""
+    if isinstance(tags, dict):
+        return tags
+    if isinstance(tags, list):
+        return {"labels": [str(t) for t in tags]}
+    return {}
+
+
 async def main() -> None:
     print("[seed] connecting to database…", flush=True)
     async with AsyncSessionLocal() as session:
@@ -541,6 +641,7 @@ async def main() -> None:
             user = await _ensure_user(session, tenant)
             new_connectors = await _seed_connectors(session, tenant)
             new_alerts, new_cases = await _seed_alerts_and_cases(session, tenant)
+            mirrored = await _mirror_cases_to_aisoc(session, tenant)
             await session.commit()
         except Exception:
             await session.rollback()
@@ -551,6 +652,7 @@ async def main() -> None:
     print(f"[seed] connectors created: {new_connectors}")
     print(f"[seed] alerts created: {new_alerts}")
     print(f"[seed] cases created: {new_cases}")
+    print(f"[seed] cases mirrored to aisoc_cases: {mirrored}")
     print("[seed] done — log into the console at http://localhost:3000")
 
 
