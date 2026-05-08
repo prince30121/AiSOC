@@ -8,7 +8,7 @@ Run this from the host (the API container has the package on its PYTHONPATH):
 
 The seed is idempotent — running it twice produces the same dataset and never
 duplicates rows. Demo IDs are kept in sync with `app/api/v1/dev_auth.py` so the
-auth bypass and the seeded data agree on who "demo@aisoc.local" is.
+auth bypass and the seeded data agree on who "demo@aisoc.dev" is.
 """
 
 from __future__ import annotations
@@ -392,16 +392,32 @@ async def _ensure_tenant(session) -> Tenant:
 
 
 async def _ensure_user(session, tenant: Tenant) -> User:
+    """Upsert the demo user.
+
+    If the deterministic demo user already exists from a previous seed (with a
+    stale email like the old ``demo@aisoc.local``, or a different password),
+    bring it back into sync rather than skipping. This keeps re-seeds idempotent
+    *and* self-healing against drift introduced by previous schema decisions.
+    """
     result = await session.execute(select(User).where(User.id == DEMO_USER_ID))
     user = result.scalar_one_or_none()
-    if user:
+    hashed = get_password_hash("aisoc-demo")
+    if user is not None:
+        user.tenant_id = tenant.id
+        user.email = DEMO_USER_EMAIL
+        user.username = "demo"
+        user.hashed_password = hashed
+        user.role = DEMO_USER_ROLE
+        user.is_active = True
+        user.is_verified = True
+        await session.flush()
         return user
     user = User(
         id=DEMO_USER_ID,
         tenant_id=tenant.id,
         email=DEMO_USER_EMAIL,
         username="demo",
-        hashed_password=get_password_hash("aisoc-demo"),
+        hashed_password=hashed,
         role=DEMO_USER_ROLE,
         is_active=True,
         is_verified=True,

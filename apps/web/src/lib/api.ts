@@ -177,6 +177,106 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
   return (await response.json()) as T;
 }
 
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+export const AUTH_TOKEN_KEY = 'aisoc.responder.accessToken';
+export const AUTH_REFRESH_KEY = 'aisoc.responder.refreshToken';
+export const AUTH_USER_KEY = 'aisoc.responder.user';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  username?: string | null;
+  role: string;
+  tenant_id: string;
+  is_active?: boolean;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface LoginResult extends TokenResponse {
+  user: AuthUser;
+}
+
+function persistAuth(tokens: TokenResponse, user: AuthUser): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, tokens.access_token);
+    if (tokens.refresh_token) {
+      window.localStorage.setItem(AUTH_REFRESH_KEY, tokens.refresh_token);
+    }
+    window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  } catch {
+    /* localStorage unavailable; ignore */
+  }
+}
+
+export const authApi = {
+  /**
+   * Email + password login against ``POST /api/v1/auth/login``.
+   *
+   * The backend returns access + refresh tokens only, so we follow up with
+   * ``GET /api/v1/auth/me`` to fetch the user record. On success, persist
+   * everything under the same localStorage keys the responder PWA uses
+   * (``aisoc.responder.accessToken`` etc.) so the existing ``request()``
+   * helper attaches the JWT automatically and a single login covers desktop
+   * + mobile.
+   */
+  async login(email: string, password: string): Promise<LoginResult> {
+    const tokens = await request<TokenResponse>('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    // Stash the access token now so the `me` request flows through the
+    // standard `Authorization: Bearer …` path in `request()`.
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(AUTH_TOKEN_KEY, tokens.access_token);
+      } catch {
+        /* ignore */
+      }
+    }
+    const user = await request<AuthUser>('/api/v1/auth/me');
+    persistAuth(tokens, user);
+    return { ...tokens, user };
+  },
+
+  logout(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+      window.localStorage.removeItem(AUTH_REFRESH_KEY);
+      window.localStorage.removeItem(AUTH_USER_KEY);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  currentUser(): AuthUser | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem(AUTH_USER_KEY);
+      return raw ? (JSON.parse(raw) as AuthUser) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  isAuthenticated(): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      return Boolean(window.localStorage.getItem(AUTH_TOKEN_KEY));
+    } catch {
+      return false;
+    }
+  },
+};
+
 // ─── Alerts ─────────────────────────────────────────────────────────────────
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
