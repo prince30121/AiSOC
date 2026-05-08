@@ -33,10 +33,12 @@ Tenant scoping invariants enforced here:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 # Connector type IDs are restricted to alphanumeric, hyphens, and underscores.
@@ -192,21 +194,64 @@ def _connectors_service_url(path: str) -> str:
     return f"{base}/api/v1{suffix}"
 
 
-async def _fetch_catalog() -> list[dict[str, Any]]:
-    """Pull the connector catalog from the connectors microservice.
+# Fallback catalog shipped with the API image. Generated from the connectors
+# microservice's registry and committed alongside the API source. Used when
+# the connectors microservice is not deployed (single-tenant / demo) or
+# temporarily unreachable so the AddConnector wizard still renders. Refresh:
+#
+#   cd services/connectors && python -c "import json; \\
+#     from app.connectors import list_connector_schemas as l; \\
+#     print(json.dumps(l(), indent=2))" \\
+#     > ../api/app/data/connector_catalog_fallback.json
+_FALLBACK_CATALOG_PATH = (
+    Path(__file__).resolve().parents[3] / "data" / "connector_catalog_fallback.json"
+)
 
-    Raises a clear 503 if the microservice is unreachable. We don't cache
-    here on purpose: catalog lookups are infrequent (a wizard open per
-    operator), and a stale cache would make the "I just added a connector
-    class and redeployed" feedback loop confusing.
+
+def _load_fallback_catalog() -> list[dict[str, Any]]:
+    """Return the bundled connector catalog, or an empty list if missing."""
+    try:
+        with _FALLBACK_CATALOG_PATH.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "connectors_service.catalog.fallback_unavailable path=%s error=%s",
+            _FALLBACK_CATALOG_PATH,
+            type(exc).__name__,
+        )
+        return []
+    return data if isinstance(data, list) else []
+
+
+async def _fetch_catalog() -> list[dict[str, Any]]:
+    """Pull the connector catalog from the connectors microservice, with fallback.
+
+    Resolution order:
+      1. If ``CONNECTORS_SERVICE_URL`` is set and reachable, use it (live source
+         of truth — supports newly-added connectors without an API redeploy).
+      2. Otherwise, fall back to the catalog bundled with the API image. This
+         is what keeps demo / single-tenant deploys functional even when the
+         dedicated connectors microservice is not deployed.
     """
+    base_url = (getattr(settings, "CONNECTORS_SERVICE_URL", "") or "").strip()
+    if not base_url:
+        logger.info("connectors_service.catalog.using_fallback reason=no_url_configured")
+        return _load_fallback_catalog()
+
     url = _connectors_service_url("/connectors/schemas")
     try:
         async with httpx.AsyncClient(timeout=_CATALOG_TIMEOUT) as client:
             resp = await client.get(url)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
-        logger.warning("connectors_service.catalog.unreachable url=%s error_type=%s", url, type(exc).__name__)
+        logger.warning(
+            "connectors_service.catalog.unreachable url=%s error_type=%s falling_back=true",
+            url,
+            type(exc).__name__,
+        )
+        fallback = _load_fallback_catalog()
+        if fallback:
+            return fallback
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connectors service is unavailable; cannot list connector catalog",

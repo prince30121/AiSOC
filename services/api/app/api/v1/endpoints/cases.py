@@ -117,6 +117,7 @@ class AddCommentRequest(BaseModel):
 
 class CaseResponse(BaseModel):
     id: uuid.UUID
+    case_number: str | None = None
     title: str
     description: str | None
     severity: str
@@ -257,6 +258,7 @@ def _coerce_tags(value: Any) -> dict[str, Any]:
 def _row_to_case(row: Any) -> CaseResponse:
     return CaseResponse(
         id=row.id,
+        case_number=getattr(row, "case_number", None),
         title=row.title,
         description=row.description,
         severity=row.severity,
@@ -277,6 +279,40 @@ def _row_to_case(row: Any) -> CaseResponse:
         tags=_coerce_tags(row.tags),
         sla_due_at=row.sla_due_at,
     )
+
+
+async def _resolve_case_id(case_id: str, db: Any) -> uuid.UUID:
+    """Resolve a case identifier (UUID **or** human-readable case_number) to a UUID.
+
+    The web console and demo deeplinks use short identifiers like ``INC-001``,
+    while the database primary key is a UUID. Accepting both forms here keeps
+    the API ergonomic without forcing the front end to do a separate lookup.
+
+    Raises ``404`` if the identifier doesn't match either form.
+    """
+    case_id = (case_id or "").strip()
+    if not case_id:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    # Try UUID first — that's the canonical form.
+    try:
+        return uuid.UUID(case_id)
+    except (ValueError, AttributeError):
+        pass
+
+    # Fall back to case_number lookup. Use a parameterized query — never
+    # interpolate the raw string into SQL.
+    row = (
+        await db.execute(
+            text(
+                "SELECT id FROM aisoc_cases WHERE case_number = :case_number "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).bindparams(case_number=case_id)
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return row.id
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -359,18 +395,20 @@ async def create_case(body: CreateCaseRequest, db: DBSession, user: AuthUser) ->
 
 
 @router.get("/{case_id}", response_model=CaseResponse, summary="Get case")
-async def get_case(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> CaseResponse:
-    row = (await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))).fetchone()
+async def get_case(case_id: str, db: DBSession, user: AuthUser) -> CaseResponse:
+    cid = await _resolve_case_id(case_id, db)
+    row = (await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=cid))).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Case not found.")
     return _row_to_case(row)
 
 
 @router.patch("/{case_id}", response_model=CaseResponse, summary="Update case")
-async def update_case(case_id: uuid.UUID, body: UpdateCaseRequest, db: DBSession, user: AuthUser) -> CaseResponse:
+async def update_case(case_id: str, body: UpdateCaseRequest, db: DBSession, user: AuthUser) -> CaseResponse:
     import json as _json
 
-    existing = (await db.execute(text("SELECT status FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))).fetchone()
+    cid = await _resolve_case_id(case_id, db)
+    existing = (await db.execute(text("SELECT status FROM aisoc_cases WHERE id = :id").bindparams(id=cid))).fetchone()
     if not existing:
         raise HTTPException(status_code=404, detail="Case not found.")
 
@@ -384,7 +422,7 @@ async def update_case(case_id: uuid.UUID, body: UpdateCaseRequest, db: DBSession
 
     now = datetime.now(UTC)
     sets = ["updated_at = :now"]
-    params: dict[str, Any] = {"id": case_id, "now": now}
+    params: dict[str, Any] = {"id": cid, "now": now}
 
     if body.title is not None:
         sets.append("title = :title"); params["title"] = body.title
@@ -420,7 +458,8 @@ async def update_case(case_id: uuid.UUID, body: UpdateCaseRequest, db: DBSession
 
 
 @router.post("/{case_id}/alerts", response_model=CaseResponse, summary="Link alerts to a case")
-async def add_alerts(case_id: uuid.UUID, body: AddAlertsRequest, db: DBSession, user: AuthUser) -> CaseResponse:
+async def add_alerts(case_id: str, body: AddAlertsRequest, db: DBSession, user: AuthUser) -> CaseResponse:
+    cid = await _resolve_case_id(case_id, db)
     ids_str = [str(a) for a in body.alert_ids]
     q = text("""
         UPDATE aisoc_cases
@@ -428,7 +467,7 @@ async def add_alerts(case_id: uuid.UUID, body: AddAlertsRequest, db: DBSession, 
             updated_at = now()
         WHERE id = :id
         RETURNING *
-    """).bindparams(id=case_id, new_ids=ids_str)
+    """).bindparams(id=cid, new_ids=ids_str)
     try:
         row = (await db.execute(q)).fetchone()
         if not row:
@@ -443,10 +482,11 @@ async def add_alerts(case_id: uuid.UUID, body: AddAlertsRequest, db: DBSession, 
 
 
 @router.post("/{case_id}/observables", response_model=CaseResponse, summary="Update observable graph")
-async def update_observables(case_id: uuid.UUID, body: UpdateObservablesRequest, db: DBSession, user: AuthUser) -> CaseResponse:
+async def update_observables(case_id: str, body: UpdateObservablesRequest, db: DBSession, user: AuthUser) -> CaseResponse:
     import json as _json
 
-    existing = (await db.execute(text("SELECT observable_graph FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))).fetchone()
+    cid = await _resolve_case_id(case_id, db)
+    existing = (await db.execute(text("SELECT observable_graph FROM aisoc_cases WHERE id = :id").bindparams(id=cid))).fetchone()
     if not existing:
         raise HTTPException(status_code=404, detail="Case not found.")
 
@@ -469,7 +509,7 @@ async def update_observables(case_id: uuid.UUID, body: UpdateObservablesRequest,
     graph = {"nodes": nodes, "edges": edges}
     q = text("""
         UPDATE aisoc_cases SET observable_graph = :g::jsonb, updated_at = now() WHERE id = :id RETURNING *
-    """).bindparams(id=case_id, g=_json.dumps(graph))
+    """).bindparams(id=cid, g=_json.dumps(graph))
     try:
         row = (await db.execute(q)).fetchone()
         await db.commit()
@@ -480,8 +520,9 @@ async def update_observables(case_id: uuid.UUID, body: UpdateObservablesRequest,
 
 
 @router.post("/{case_id}/comments", response_model=CommentResponse, status_code=201, summary="Add comment")
-async def add_comment(case_id: uuid.UUID, body: AddCommentRequest, db: DBSession, user: AuthUser) -> CommentResponse:
-    exists = (await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))).fetchone()
+async def add_comment(case_id: str, body: AddCommentRequest, db: DBSession, user: AuthUser) -> CommentResponse:
+    cid = await _resolve_case_id(case_id, db)
+    exists = (await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=cid))).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Case not found.")
 
@@ -490,7 +531,7 @@ async def add_comment(case_id: uuid.UUID, body: AddCommentRequest, db: DBSession
     q = text("""
         INSERT INTO aisoc_case_comments (id, case_id, author, body, is_system, created_at)
         VALUES (:id, :case_id, :author, :body, :sys, :now) RETURNING *
-    """).bindparams(id=comment_id, case_id=case_id, author=str(user) if user else "system", body=body.body, sys=body.is_system, now=now)
+    """).bindparams(id=comment_id, case_id=cid, author=str(user) if user else "system", body=body.body, sys=body.is_system, now=now)
     try:
         row = (await db.execute(q)).fetchone()
         await db.commit()
@@ -504,14 +545,30 @@ async def add_comment(case_id: uuid.UUID, body: AddCommentRequest, db: DBSession
 
 
 @router.get("/{case_id}/comments", response_model=list[CommentResponse], summary="List case comments")
-async def list_comments(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> list[CommentResponse]:
-    rows = (await db.execute(text("SELECT * FROM aisoc_case_comments WHERE case_id = :id ORDER BY created_at").bindparams(id=case_id))).fetchall()
+async def list_comments(case_id: str, db: DBSession, user: AuthUser) -> list[CommentResponse]:
+    cid = await _resolve_case_id(case_id, db)
+    rows = (await db.execute(text("SELECT * FROM aisoc_case_comments WHERE case_id = :id ORDER BY created_at").bindparams(id=cid))).fetchall()
     return [CommentResponse(id=r.id, case_id=r.case_id, author=r.author, body=r.body, is_system=r.is_system, created_at=r.created_at) for r in rows]
 
 
+# Alias `/notes` → `/comments` so the web console (which calls `/notes` for the
+# "Add Note" affordance) hits the same backing store.  Keeping both routes
+# avoids a behavior change for any existing integration that already speaks
+# `/comments`.
+@router.get("/{case_id}/notes", response_model=list[CommentResponse], summary="List case notes (alias of /comments)")
+async def list_notes(case_id: str, db: DBSession, user: AuthUser) -> list[CommentResponse]:
+    return await list_comments(case_id, db, user)
+
+
+@router.post("/{case_id}/notes", response_model=CommentResponse, status_code=201, summary="Add case note (alias of /comments)")
+async def add_note(case_id: str, body: AddCommentRequest, db: DBSession, user: AuthUser) -> CommentResponse:
+    return await add_comment(case_id, body, db, user)
+
+
 @router.get("/{case_id}/evidence", response_model=EvidenceReport, summary="Export evidence chain report")
-async def evidence_report(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> EvidenceReport:
-    row = (await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))).fetchone()
+async def evidence_report(case_id: str, db: DBSession, user: AuthUser) -> EvidenceReport:
+    cid = await _resolve_case_id(case_id, db)
+    row = (await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=cid))).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Case not found.")
     return EvidenceReport(
@@ -538,9 +595,10 @@ async def evidence_report(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> 
 
 
 @router.get("/{case_id}/timeline", response_model=TimelineResponse, summary="Case activity timeline")
-async def case_timeline(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> TimelineResponse:
+async def case_timeline(case_id: str, db: DBSession, user: AuthUser) -> TimelineResponse:
+    cid = await _resolve_case_id(case_id, db)
     case_row = (
-        await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+        await db.execute(text("SELECT * FROM aisoc_cases WHERE id = :id").bindparams(id=cid))
     ).fetchone()
     if not case_row:
         raise HTTPException(status_code=404, detail="Case not found.")
@@ -579,7 +637,7 @@ async def case_timeline(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> Ti
             text(
                 "SELECT id, author, body, is_system, created_at "
                 "FROM aisoc_case_comments WHERE case_id = :id ORDER BY created_at"
-            ).bindparams(id=case_id)
+            ).bindparams(id=cid)
         )
     ).fetchall()
     for c in comment_rows:
@@ -625,7 +683,7 @@ async def case_timeline(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> Ti
                 text(
                     "SELECT id, title, status, assignee, created_at "
                     "FROM aisoc_case_tasks WHERE case_id = :id ORDER BY created_at"
-                ).bindparams(id=case_id)
+                ).bindparams(id=cid)
             )
         ).fetchall()
         for t in task_rows:
@@ -652,9 +710,10 @@ async def case_timeline(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> Ti
 
 
 @router.get("/{case_id}/tasks", response_model=list[TaskResponse], summary="List case tasks")
-async def list_tasks(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> list[TaskResponse]:
+async def list_tasks(case_id: str, db: DBSession, user: AuthUser) -> list[TaskResponse]:
+    cid = await _resolve_case_id(case_id, db)
     exists = (
-        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=cid))
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Case not found.")
@@ -663,7 +722,7 @@ async def list_tasks(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> list[
             text(
                 "SELECT id, title, status, assignee, due_at, created_at "
                 "FROM aisoc_case_tasks WHERE case_id = :id ORDER BY created_at"
-            ).bindparams(id=case_id)
+            ).bindparams(id=cid)
         )
     ).fetchall()
     return [_row_to_task(r) for r in rows]
@@ -671,13 +730,14 @@ async def list_tasks(case_id: uuid.UUID, db: DBSession, user: AuthUser) -> list[
 
 @router.post("/{case_id}/tasks", response_model=TaskResponse, status_code=201, summary="Create task")
 async def create_task(
-    case_id: uuid.UUID,
+    case_id: str,
     body: CreateTaskRequest,
     db: DBSession,
     user: AuthUser,
 ) -> TaskResponse:
+    cid = await _resolve_case_id(case_id, db)
     exists = (
-        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=cid))
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Case not found.")
@@ -697,7 +757,7 @@ async def create_task(
                     """
                 ).bindparams(
                     id=task_id,
-                    case_id=case_id,
+                    case_id=cid,
                     title=body.title,
                     status=body.status,
                     assignee=body.assignee,
@@ -716,14 +776,15 @@ async def create_task(
 
 @router.patch("/{case_id}/tasks/{task_id}", response_model=TaskResponse, summary="Update task")
 async def update_task(
-    case_id: uuid.UUID,
+    case_id: str,
     task_id: uuid.UUID,
     body: UpdateTaskRequest,
     db: DBSession,
     user: AuthUser,
 ) -> TaskResponse:
+    cid = await _resolve_case_id(case_id, db)
     sets: list[str] = []
-    params: dict[str, Any] = {"id": task_id, "case_id": case_id, "now": datetime.now(UTC)}
+    params: dict[str, Any] = {"id": task_id, "case_id": cid, "now": datetime.now(UTC)}
     if body.title is not None:
         sets.append("title = :title")
         params["title"] = body.title
@@ -789,20 +850,21 @@ async def _agents_proxy(method: str, path: str, **kwargs: Any) -> httpx.Response
 
 @router.post("/{case_id}/investigate", summary="Launch investigation for case")
 async def case_investigate(
-    case_id: uuid.UUID,
+    case_id: str,
     body: InvestigateRequest,
     db: DBSession,
     user: AuthUser,
 ) -> dict[str, Any]:
+    cid = await _resolve_case_id(case_id, db)
     exists = (
-        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=case_id))
+        await db.execute(text("SELECT 1 FROM aisoc_cases WHERE id = :id").bindparams(id=cid))
     ).fetchone()
     if not exists:
         raise HTTPException(status_code=404, detail="Case not found.")
 
     resp = await _agents_proxy(
         "POST",
-        f"/api/v1/cases/{case_id}/investigate",
+        f"/api/v1/cases/{cid}/investigate",
         json={"alert_summary": body.alert_summary or ""},
     )
     if resp.status_code >= 400:
@@ -810,9 +872,33 @@ async def case_investigate(
     return resp.json()
 
 
+@router.get("/{case_id}/investigations", summary="List investigation runs for a case")
+async def list_case_investigations(
+    case_id: str,
+    db: DBSession,
+    user: AuthUser,
+) -> dict[str, Any]:
+    """List all investigation runs for a case.
+
+    The agents service is the source of truth.  When it's unreachable we return
+    an empty list rather than 503 so the case detail page still renders.
+    """
+    cid = await _resolve_case_id(case_id, db)
+    try:
+        resp = await _agents_proxy("GET", f"/api/v1/cases/{cid}/investigations")
+        if resp.status_code == 404:
+            return {"runs": []}
+        if resp.status_code >= 400:
+            return {"runs": []}
+        return resp.json()
+    except HTTPException:
+        # Agents service unavailable — render a soft-empty list instead of 503.
+        return {"runs": []}
+
+
 @router.get("/{case_id}/investigations/{run_id}", summary="Get investigation run")
 async def case_investigation_run(
-    case_id: uuid.UUID,
+    case_id: str,
     run_id: str,
     user: AuthUser,
 ) -> dict[str, Any]:
@@ -827,7 +913,7 @@ async def case_investigation_run(
     summary="Download investigation PDF report",
 )
 async def case_investigation_pdf(
-    case_id: uuid.UUID,
+    case_id: str,
     run_id: str,
     user: AuthUser,
 ) -> Response:
@@ -844,3 +930,60 @@ async def case_investigation_pdf(
             ),
         },
     )
+
+
+@router.get("/{case_id}/related", summary="List related cases (by alert/observable overlap)")
+async def list_related_cases(
+    case_id: str,
+    db: DBSession,
+    user: AuthUser,
+) -> dict[str, Any]:
+    """Return other cases that share alerts or observables with this case.
+
+    This is intentionally a lightweight heuristic — we look for cases that
+    overlap on `alert_ids` or share an observable IP/host.  It's the smallest
+    thing the case detail page needs to stop 404'ing.
+    """
+    cid = await _resolve_case_id(case_id, db)
+    row = (
+        await db.execute(
+            text(
+                "SELECT alert_ids, observable_graph FROM aisoc_cases WHERE id = :id"
+            ).bindparams(id=cid)
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    alert_ids = list(row.alert_ids or [])
+    related: list[dict[str, Any]] = []
+
+    if alert_ids:
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id, case_number, title, severity, status, created_at
+                    FROM aisoc_cases
+                    WHERE id <> :id
+                      AND alert_ids && CAST(:alerts AS UUID[])
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                    """
+                ).bindparams(id=cid, alerts=[str(a) for a in alert_ids])
+            )
+        ).fetchall()
+        for r in rows:
+            related.append(
+                {
+                    "id": str(r.id),
+                    "case_number": r.case_number,
+                    "title": r.title,
+                    "severity": r.severity or "medium",
+                    "status": r.status or "new",
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "reason": "shared_alerts",
+                }
+            )
+
+    return {"related": related}

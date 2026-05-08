@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     compliance,
     connectors,
     deployment,
+    detection_compat,
     detection_loop,
     detection_proposals,
     detection_rules,
@@ -62,6 +63,8 @@ api_router.include_router(cases.router)
 api_router.include_router(connectors.router)
 api_router.include_router(tenants.router)
 api_router.include_router(detection_rules.router)
+# Frontend-shape facade: /api/v1/detection/rules + /api/v1/detection/test
+api_router.include_router(detection_compat.router)
 api_router.include_router(detection_proposals.router)
 api_router.include_router(federated.router)
 api_router.include_router(graph.router)

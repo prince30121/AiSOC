@@ -98,6 +98,27 @@ class MitreCoverageItem(BaseModel):
     alert_count: int
 
 
+# ── Frontend-shape coverage payload ─────────────────────────────────────────
+# Matches `MitreCoverage` in apps/web/src/lib/api.ts so the analyst console's
+# /api/v1/graph/mitre/coverage call hydrates without a 404 + client-side
+# remap. Intensity is normalized to [0, 1] across the returned cell set.
+
+
+class MitreCoverageCell(BaseModel):
+    techniqueId: str
+    techniqueName: str
+    tactic: str
+    detections: int
+    alerts: int
+    intensity: float
+
+
+class MitreCoverageResponse(BaseModel):
+    tactics: list[str]
+    cells: list[MitreCoverageCell]
+    generatedAt: str
+
+
 class UpsertHostRequest(BaseModel):
     host_id: str
     hostname: str
@@ -376,6 +397,80 @@ async def get_mitre_coverage(
         )
         for r in records
     ]
+
+
+@router.get(
+    "/mitre/coverage",
+    response_model=MitreCoverageResponse,
+    summary="MITRE ATT&CK coverage (frontend shape)",
+)
+async def get_mitre_coverage_compat(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> MitreCoverageResponse:
+    """Aggregated MITRE coverage in the shape the analyst console expects.
+
+    The console's :code:`graph.getMitreCoverage()` call hits this URL and
+    expects ``{ tactics, cells, generatedAt }``.  We aggregate the
+    per-technique records returned by the same Neo4j-backed service used by
+    ``/graph/mitre-coverage`` and degrade gracefully (empty set) when the
+    knowledge graph is offline, mirroring that endpoint's behaviour.
+    """
+    from datetime import UTC as _UTC, datetime as _dt
+
+    try:
+        records = await graph_service.get_mitre_coverage(
+            tenant_id=str(current_user.tenant_id),
+        )
+    except Exception as exc:
+        if _is_graph_unavailable(exc):
+            logger.info(
+                "MITRE coverage (compat): graph backend unavailable; empty",
+                exc_info=False,
+            )
+            return MitreCoverageResponse(
+                tactics=[],
+                cells=[],
+                generatedAt=_dt.now(_UTC).isoformat(),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Graph query failed: {exc}",
+        ) from exc
+
+    cells: list[MitreCoverageCell] = []
+    tactics: set[str] = set()
+    max_alerts = 1
+    for r in records:
+        max_alerts = max(max_alerts, int(r.get("alert_count", 0) or 0))
+
+    for r in records:
+        technique_id = r.get("technique_id") or ""
+        tactic = r.get("tactic") or "unknown"
+        alerts = int(r.get("alert_count", 0) or 0)
+        # detections per technique aren't tracked in the graph schema yet;
+        # treat coverage as a 1:1 proxy of alert evidence so the heatmap has
+        # something to shade. When richer data lands, swap in a separate
+        # aggregation here.
+        detections = 1 if alerts > 0 else 0
+        intensity = round(alerts / max_alerts, 4) if max_alerts else 0.0
+
+        tactics.add(tactic)
+        cells.append(
+            MitreCoverageCell(
+                techniqueId=technique_id,
+                techniqueName=r.get("name") or technique_id,
+                tactic=tactic,
+                detections=detections,
+                alerts=alerts,
+                intensity=intensity,
+            )
+        )
+
+    return MitreCoverageResponse(
+        tactics=sorted(tactics),
+        cells=cells,
+        generatedAt=_dt.now(_UTC).isoformat(),
+    )
 
 
 # ─── Write Endpoints ──────────────────────────────────────────────────────────

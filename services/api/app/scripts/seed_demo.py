@@ -319,9 +319,11 @@ def _make_case(tenant_id: uuid.UUID, idx: int, when: datetime, alert_ids: list[u
         weights=[30, 35, 10, 15, 10],
     )[0]
     techniques = _pick_techniques(2)
+    # Human-readable identifier — keep in sync with the demo deeplinks the
+    # marketing site and product walkthroughs use (e.g. /cases/INC-001).
     return Case(
         tenant_id=tenant_id,
-        case_number=f"CASE-{1000 + idx:04d}",
+        case_number=f"INC-{idx + 1:03d}",
         title=_rng.choice(
             [
                 "Coordinated brute-force campaign across SaaS apps",
@@ -597,6 +599,7 @@ async def _mirror_cases_to_aisoc(session, tenant: Tenant) -> int:
         params = {
             "id": str(c.id),
             "tenant_id": str(c.tenant_id),
+            "case_number": c.case_number,
             "title": c.title,
             "description": c.description or c.summary or "",
             "severity": _AISOC_SEVERITY_MAP.get(c.severity, "medium"),
@@ -616,12 +619,13 @@ async def _mirror_cases_to_aisoc(session, tenant: Tenant) -> int:
             text(
                 """
                 INSERT INTO aisoc_cases (
-                    id, tenant_id, title, description, severity, status,
+                    id, tenant_id, case_number,
+                    title, description, severity, status,
                     assignee, mitre_techniques, alert_ids,
                     opened_at, resolved_at, closed_at,
                     created_at, updated_at, created_by, tags
                 ) VALUES (
-                    CAST(:id AS UUID), CAST(:tenant_id AS UUID),
+                    CAST(:id AS UUID), CAST(:tenant_id AS UUID), :case_number,
                     :title, :description, :severity, :status,
                     :assignee, CAST(:mitre_techniques AS JSONB),
                     CAST(:alert_ids AS UUID[]),
@@ -629,7 +633,7 @@ async def _mirror_cases_to_aisoc(session, tenant: Tenant) -> int:
                     :created_at, :updated_at, :created_by,
                     CAST(:tags AS JSONB)
                 )
-                ON CONFLICT (id) DO NOTHING
+                ON CONFLICT (id) DO UPDATE SET case_number = EXCLUDED.case_number
                 """
             ).bindparams(**params)
         )

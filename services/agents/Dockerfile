@@ -29,11 +29,11 @@ RUN set -eux; \
             "uvicorn[standard]>=0.27,<0.28" \
             "pydantic>=2.5,<3" \
             "pydantic-settings>=2.1,<3" \
-            "langchain>=0.1,<0.2" \
-            "langchain-core>=0.1,<0.2" \
-            "langchain-openai>=0.0.5,<0.1" \
-            "langchain-community>=0.0.20,<0.1" \
-            "langgraph>=0.0.30,<0.1" \
+            "langchain>=0.3,<0.4" \
+            "langchain-core>=0.3,<0.4" \
+            "langchain-openai>=0.2,<0.3" \
+            "langchain-community>=0.3,<0.4" \
+            "langgraph>=0.2.40,<0.4" \
             "openai>=1.12,<2" \
             "redis[hiredis]>=5.0,<6" \
             "httpx>=0.26,<0.27" \
@@ -54,7 +54,10 @@ RUN set -eux; \
 
 # Smoke-import the modules the orchestrator pulls in at module load time.
 # Catches "image built but broken" cases at build time instead of runtime.
-RUN python -c "import opentelemetry, langgraph, fastapi, sqlalchemy, asyncpg, redis, httpx, structlog, apscheduler, yaml"
+# Also assert that the langgraph version on disk exposes the ``START``
+# sentinel — langgraph 0.0.x silently lacked it, which previously crashed the
+# agents service at boot with ``ImportError: cannot import name 'START'``.
+RUN python -c "import opentelemetry, langgraph, fastapi, sqlalchemy, asyncpg, redis, httpx, structlog, apscheduler, yaml; from langgraph.graph import END, START, StateGraph"
 
 COPY app/ ./app/
 

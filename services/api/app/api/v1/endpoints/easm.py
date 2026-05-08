@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.deps import CurrentUser, get_current_user
 from app.core.config import get_settings
 from app.db.database import get_db
 from app.models.easm import ExternalAsset, ExternalAssetDrift, ExternalAssetType
@@ -91,15 +92,21 @@ async def trigger_easm_scan(
 
 @router.get("/assets")
 async def list_external_assets(
-    tenant_id: UUID,
+    tenant_id: UUID | None = Query(None),
     asset_type: Optional[ExternalAssetType] = Query(None),
     limit: int = Query(50, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
-    """List externally discovered assets for a tenant."""
+    """List externally discovered assets for a tenant.
+
+    ``tenant_id`` defaults to the authenticated user's tenant, so the analyst
+    console can hit ``/easm/assets`` without explicit tenant scoping.
+    """
+    effective_tenant = tenant_id or current_user.tenant_id
     stmt = (
         select(ExternalAsset)
-        .where(ExternalAsset.tenant_id == tenant_id)
+        .where(ExternalAsset.tenant_id == effective_tenant)
         .order_by(ExternalAsset.last_seen.desc())
         .limit(limit)
     )
@@ -123,15 +130,17 @@ async def list_external_assets(
 
 @router.get("/drift")
 async def list_external_asset_drift(
-    tenant_id: UUID,
+    tenant_id: UUID | None = Query(None),
     external_asset_id: Optional[UUID] = Query(None),
     limit: int = Query(50, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
     """List drift events (new ports, certs, sub-domains, etc.)."""
+    effective_tenant = tenant_id or current_user.tenant_id
     stmt = (
         select(ExternalAssetDrift)
-        .where(ExternalAssetDrift.tenant_id == tenant_id)
+        .where(ExternalAssetDrift.tenant_id == effective_tenant)
         .order_by(ExternalAssetDrift.detected_at.desc())
         .limit(limit)
     )
