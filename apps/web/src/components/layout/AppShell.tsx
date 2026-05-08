@@ -21,7 +21,7 @@ export function AppShell({ children }: AppShellProps) {
     <div className="min-h-screen bg-[#0a0d14]">
       <DemoBanner />
       <Sidebar />
-      <div className="ml-60">
+      <div className="md:ml-60">
         <TopBar demoOffset={demo} />
         <main className={`${topPadClass} min-h-screen`}>
           <div className="p-6">{children}</div>

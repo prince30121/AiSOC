@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
 import { alertsApi, type Alert, type AlertFilters, type ConfidenceLabel } from '@/lib/api';
 import { clsx } from 'clsx';
 import { formatDistanceToNow } from 'date-fns';
@@ -294,7 +295,10 @@ export function AlertsView() {
               Alerts
             </button>
           </div>
-          <button className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
+          <button
+            onClick={() => toast('Manual alert creation is coming soon.', { icon: '🔔' })}
+            className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+          >
             + Create Alert
           </button>
         </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { clsx } from 'clsx';
@@ -234,6 +235,7 @@ const navSections: NavSection[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const isActive = (href: string) => {
     if (href === '/dashboard') return pathname === '/dashboard';
@@ -241,7 +243,31 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="fixed inset-y-0 left-0 w-60 flex flex-col bg-gray-900/95 border-r border-gray-800/60 z-30">
+    <>
+      {/* Mobile hamburger */}
+      <button
+        type="button"
+        aria-label="Open navigation"
+        onClick={() => setMobileOpen(true)}
+        className="md:hidden fixed top-4 left-4 z-40 p-2 rounded-lg bg-gray-800/90 text-gray-300 hover:text-white"
+      >
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      {/* Backdrop */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-30 bg-black/60"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+    <aside className={clsx(
+      'fixed inset-y-0 left-0 w-60 flex flex-col bg-gray-900/95 border-r border-gray-800/60 z-40 transition-transform duration-200',
+      mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+    )}>
       {/* Logo */}
       <div className="flex items-center gap-3 px-5 h-16 border-b border-gray-800/60">
         <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-600/30 flex items-center justify-center">
@@ -277,6 +303,7 @@ export function Sidebar() {
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      onClick={() => setMobileOpen(false)}
                       className={clsx(
                         'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150',
                         active
@@ -318,5 +345,6 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+    </>
   );
 }

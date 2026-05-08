@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
 import { casesApi, type Case } from '@/lib/api';
 import { clsx } from 'clsx';
 import { format } from 'date-fns';
@@ -150,7 +151,10 @@ export function CasesView() {
           <h1 className="text-xl font-semibold text-gray-100">Cases</h1>
           <p className="text-sm text-gray-500 mt-0.5">Manage security investigations and incidents</p>
         </div>
-        <button className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+        <button
+          onClick={() => toast('Case creation wizard is coming soon.', { icon: '📋' })}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
