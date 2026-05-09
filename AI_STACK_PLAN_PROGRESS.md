@@ -52,10 +52,16 @@ User asked for:
 | gh-2                       | Pull live code-scanning alerts and triage                                    | DONE (47 alerts triaged) |
 | gh-6                       | Fix code-scanning issues (critical/high first)                               | DONE for SSRF + log-injection in `cases.py` + `fusion.py`; remaining notes (unused imports, bind-all, weak hash) triaged as benign |
 | gh-5                       | Sync docs/architecture so GitHub matches current state                       | DONE (`docs/architecture/SYSTEM_DESIGN.md` §12 added; topology + service table updated) |
-| gh-commit-pre-rewrite      | Commit fixes + tracker with `Beenu Arora <beenu@cyble.com>`, no co-authors   | IN PROGRESS |
-| gh-3a..gh-3e               | History-rewrite plan (filter-repo + force-push)                              | PENDING     |
-| gh-prs                     | Close 19 dependabot PRs; comment on #37 for K4R7IK to rebase                 | PENDING     |
-| gh-7                       | Verify code-scanning alerts cleared after push                               | PENDING     |
+| gh-commit-pre-rewrite      | Commit fixes + tracker with `Beenu Arora <beenu@cyble.com>`, no co-authors   | DONE        |
+| gh-3a..gh-3e               | History-rewrite plan (filter-repo + force-push)                              | DONE (3 passes; verified clean; CI workflows patched) |
+| gh-prs                     | Close 19 dependabot PRs; comment on #37 for K4R7IK to rebase                 | DONE        |
+| gh-7                       | Verify code-scanning alerts cleared after push                               | DONE (0 open high/medium/error alerts; 3 false positives dismissed with rationales) |
+| gh-7a                      | Add `safe_log_value` helper + apply to 19 `py/log-injection` sites           | DONE        |
+| gh-7b                      | Fix `py/url-redirection` in `oauth.py` (whitelist + URL reconstruction)      | DONE        |
+| gh-7c                      | Fix/dismiss 3 `py/incomplete-url-substring-sanitization` alerts              | DONE        |
+| gh-7d                      | Dismiss CodeQL false positives with rationales                               | DONE        |
+| gh-7e                      | Clean up note-level alerts (unused imports/vars, empty except)               | DONE        |
+| tryaisoc-cj                | Customer journey review of tryaisoc.com — find and fix bugs                  | IN PROGRESS |
 
 ### Co-author trailer issue (resolved at the local layer)
 
@@ -371,15 +377,16 @@ Reference plan §WS9.
   {"id": "ws9-sidebar",           "content": "WS9: register new docs in apps/docs/sidebars.ts", "status": "completed"},
   {"id": "gh-5",                  "content": "Sync docs/architecture (WS3-WS8) so GitHub matches current state", "status": "completed"},
   {"id": "tracker-update-ws9",    "content": "Update AI_STACK_PLAN_PROGRESS.md to mark WS9 done", "status": "completed"},
-  {"id": "gh-commit",             "content": "Commit all WS9 + tracker docs with Beenu Arora <beenu@cyble.com> identity (no co-author trailers)", "status": "pending"},
-  {"id": "gh-3a",                 "content": "Backup current main to refs/heads/backup/pre-rewrite-2026-05-08 on origin", "status": "pending"},
-  {"id": "gh-3b",                 "content": "Install git-filter-repo and build authors/message callbacks (strip cursoragent + AiSOC Bot trailers, canonicalize all to beenu@cyble.com)", "status": "pending"},
-  {"id": "gh-3c",                 "content": "Run git-filter-repo on a fresh mirror; verify locally that all commits show Beenu Arora <beenu@cyble.com> and no Co-authored-by trailers remain", "status": "pending"},
-  {"id": "gh-3d",                 "content": "Force-push rewritten main + tags + branches", "status": "pending"},
-  {"id": "gh-3e",                 "content": "Verify GitHub contributors graph shows only beenu", "status": "pending"},
-  {"id": "gh-prs",                "content": "Close 19 dependabot PRs with explanation; comment on #37 asking K4R7IK to rebase", "status": "pending"},
-  {"id": "gh-7",                  "content": "Verify code-scanning alerts cleared after push; record any remaining", "status": "pending"},
-  {"id": "tryaisoc-cj",           "content": "Customer journey review of tryaisoc.com — find and fix bugs", "status": "pending"}
+  {"id": "gh-commit",             "content": "Commit all WS9 + tracker docs with Beenu Arora <beenu@cyble.com> identity (no co-author trailers)", "status": "completed"},
+  {"id": "gh-3a",                 "content": "Backup current main to refs/heads/backup/pre-rewrite-2026-05-08 on origin", "status": "completed"},
+  {"id": "gh-3b",                 "content": "Install git-filter-repo and build authors/message callbacks (strip cursoragent + AiSOC Bot trailers, canonicalize all to beenu@cyble.com)", "status": "completed"},
+  {"id": "gh-3c",                 "content": "Run git-filter-repo on a fresh mirror; verify locally that all commits show Beenu Arora <beenu@cyble.com> and no Co-authored-by trailers remain", "status": "completed"},
+  {"id": "gh-3d",                 "content": "Force-push rewritten main + tags + branches", "status": "completed"},
+  {"id": "gh-3e",                 "content": "Verify GitHub contributors graph shows only beenu", "status": "completed"},
+  {"id": "gh-prs",                "content": "Close 19 dependabot PRs with explanation; comment on #37 asking K4R7IK to rebase", "status": "completed"},
+  {"id": "gh-7",                  "content": "Verify code-scanning alerts cleared after push; record any remaining (3 false positives dismissed; 0 open high/medium/error)", "status": "completed"},
+  {"id": "gh-ci-identity",        "content": "Patch CI workflows so machine commits use Beenu Arora identity", "status": "completed"},
+  {"id": "tryaisoc-cj",           "content": "Customer journey review of tryaisoc.com — find and fix bugs", "status": "in_progress"}
 ]
 ```
 
@@ -399,19 +406,43 @@ Reference plan §WS9.
 
 ## Resume here
 
-All nine plan workstreams (WS1-WS9) are now DONE. Remaining work is the
-GitHub hygiene tail.
+All nine plan workstreams (WS1-WS9) and the entire GitHub hygiene tail
+(`gh-1` … `gh-7`, `gh-ci-identity`) are now DONE. The history rewrite
+landed cleanly, contributors graph shows only `beenu`, and CodeQL is
+green (0 open high/medium/error alerts; 3 medium false positives
+dismissed with rationale).
 
-1. **Commit current working tree** (`gh-commit`): commit the WS9 docs +
-   `SYSTEM_DESIGN.md` §12 + this tracker update with identity
-   `Beenu Arora <beenu@cyble.com>`. Run the `commit-msg` hook check
-   afterwards to confirm no `Co-authored-by` trailers slipped through.
-2. **Push to origin** (`gh-push`): `git push origin main`.
-3. Re-run `git log -5 --format='%h %an <%ae>%n%(trailers:only=true)'` to
-   confirm no `Co-authored-by` trailers in the last few commits.
-4. Continue down the GitHub hygiene table above (`gh-3a` → `gh-7`):
-   backup, history rewrite via `git filter-repo`, force-push, verify
-   contributors, close stale PRs, verify code-scanning alerts cleared.
-5. Then `tryaisoc-cj`: customer journey review of `tryaisoc.com` for
-   bugs.
-6. Workspace rule: do not stop until every todo is done.
+The single remaining workstream is `tryaisoc-cj`: a customer journey
+review of `https://tryaisoc.com` to find and fix bugs.
+
+### tryaisoc-cj plan
+
+1. **Inventory the live surface.** Crawl `tryaisoc.com` from a clean
+   browser context (cursor-ide-browser MCP). Capture the IA, marketing
+   pages, docs entry points, demo CTA, signup/login flows, and any
+   product surface that is exposed to anonymous visitors. Take
+   screenshots + console/network logs.
+2. **Walk each persona path.**
+   - Anonymous visitor → home → "How it works" → docs → demo CTA.
+   - Prospective customer → "Book demo" / contact form → confirm form
+     submits or fails gracefully.
+   - Developer → docs site (`docs.tryaisoc.com` or sub-route) → quick
+     start → SDK install snippet → API reference.
+   - Self-serve trial (if exposed) → signup → tenant bootstrap →
+     first connector.
+3. **Bug taxonomy.** For each issue, capture: severity (P0 / P1 / P2),
+   page URL, repro steps, expected vs actual, console errors, network
+   failures, screenshot. P0 = broken core flow (signup/demo/docs 500).
+   P1 = visible UX defect on a public page. P2 = polish.
+4. **Fix in repo.** Most marketing copy, docs, and routing live in
+   `apps/web` and `apps/docs`. Apply minimal diffs per bug, run the
+   relevant `pnpm` lint/typecheck, and commit each fix as
+   `Beenu Arora <beenu@cyble.com>` with no co-author trailers.
+5. **Re-verify after deploy.** After push lands and the deploy
+   completes, re-run the same browser sweep on the fixed paths to
+   confirm green state.
+6. **Update this tracker.** Append a `tryaisoc-cj findings` subsection
+   (URL, severity, fix commit) and flip `tryaisoc-cj` to DONE only
+   when every P0/P1 has shipped.
+
+Workspace rule: do not stop until every todo is done.
