@@ -11,11 +11,22 @@ This document describes the end-to-end architecture of the AiSOC platform after 
                        │              External Sources                │
                        │  EDR / SIEM / Cloud / Identity / Network     │
                        │  CrowdStrike · Splunk · AWS · Okta · Sentinel│
-                       └─────────────────────┬────────────────────────┘
-                                             │
-                                       Webhooks / Pull
-                                             │
-                                             ▼
+                       └─────────┬───────────────────────┬────────────┘
+                                 │                       │
+                           Webhooks / Email          Vendor APIs
+                           (Universal Capture)       (poll loop)
+                                 │                       │
+                                 ▼                       ▼
+                       ┌─────────────────┐   ┌──────────────────────┐
+                       │  services/api   │   │ services/connectors  │
+                       │  inbox tokens + │   │  APScheduler poll    │
+                       │  HMAC webhooks  │   │  42 connector classes│
+                       │  CEF / HEC / DNS│   │  push_case + status  │
+                       └────────┬────────┘   └──────────┬───────────┘
+                                │                       │
+                                └───────────┬───────────┘
+                                            │
+                                            ▼
               ┌──────────────────────────────────────────────────────┐
               │                services/ingest (Go)                   │
               │  ─ OCSF normalizer                                     │
@@ -79,7 +90,8 @@ This document describes the end-to-end architecture of the AiSOC platform after 
 | `services/ingest` | Go 1.21 | Normalize raw events → OCSF, tag ATT&CK, enrich Shodan | Emit `vulnerability.matches` topic |
 | `services/enrichment` | Go 1.21 | Per-IOC TTL-cached enrichment lookups | n/a |
 | `services/fusion` | Python 3.11 | Simhash dedup → correlation → ML scoring → publish fused alerts | Background ML retrain on feedback |
-| `services/api` | Python 3.11 | REST + WS, RBAC, case mgmt, rule engine, graph queries | Schema migrations on boot |
+| `services/api` | Python 3.11 | REST + WS, RBAC, case mgmt, rule engine, graph queries, ITSM webhook inbox, case fan-out | Schema migrations on boot |
+| `services/connectors` | Python 3.11 | 42 connector classes, APScheduler poll, `push_case` / `push_status_change` for Jira & ServiceNow | CredentialVault decrypt at poll time |
 | `services/agents` | Python 3.11 | LangGraph multi-agent investigation runs | Loads full ATT&CK STIX bundle on boot, optional Qdrant embed |
 | `services/actions` | Python 3.11 | SOAR action execution with blast-radius gating | Approval workflows |
 | `services/threatintel` | Python 3.11 | IOC/actor search API | APScheduler poll loop for TAXII/MISP/OTX/KEV |
@@ -286,3 +298,75 @@ Each agent emits chain-of-thought traces persisted in PostgreSQL for explainabil
 * [API Reference](../api/API_REFERENCE.md)
 * [Local Development](../runbooks/LOCAL_DEVELOPMENT.md)
 * [PROGRESS.md](../../PROGRESS.md)
+
+---
+
+## 12. v2.1 Additions (Connector Platform, Case Fan-out, Bidirectional ITSM)
+
+The following subsystems were added on top of the v2 design described above. They are additive — none of the previous architecture changed semantically; the data flow into `services/ingest` simply gained two new front doors.
+
+### 12.1 Connector Platform (`services/connectors`)
+
+A first-class, in-process polling tier with 42 registered connector classes spanning seven categories — `edr`, `siem`, `cloud`, `iam`, `saas`, `vcs`, `network`. Every connector subclasses `BaseConnector` and declares:
+
+* `schema()` — self-describing `ConnectorSchema(name, label, category, fields, oauth, default_poll_interval_seconds)` consumed by the web console for the connect form.
+* `capabilities()` — tuple of `Capability` enum values (`PULL_ALERTS`, `PUSH_CASE`, `PUSH_STATUS`, `FEDERATED_SEARCH`, …) that the orchestrator inspects at runtime.
+* `normalize()` — collapses each vendor's severity ladder into the four-tier `info | low | medium | high` scheme.
+
+Sensitive `auth_config` fields (marked `secret=True` in the schema) are encrypted at the application layer by `CredentialVault` (Fernet AES-128-CBC + HMAC-SHA256, vault token format `vault:v1:<base64>`). Key rotation is supported via `MultiFernet` with `AISOC_CREDENTIAL_KEY_ROTATION_FROM`. The API service holds the encrypt/decrypt keypair authority; `services/connectors` ships a vendored read-path `decrypt_dict()` so the scheduler can decrypt at poll time without owning the write path.
+
+Polling runs in-process via `ConnectorScheduler` (APScheduler): one job per enabled instance, 5-minute default cadence, overridable per-instance via `connector_config.poll_interval_seconds`. The scheduler reloads jobs every 30 seconds. Disable in tests with `AISOC_CONNECTORS_DISABLE_SCHEDULER=1`.
+
+Normalized events flow through `IngestClient` to `services/ingest`'s `/v1/ingest/batch` endpoint with an `X-Tenant-ID` header — preserving the OCSF normalization, ATT&CK tagging, and KEV correlation already described in §1.
+
+→ [Connector capability matrix](../../apps/docs/docs/connectors/api-coverage.md)
+→ [Credential vault threat model](../../apps/docs/docs/operations/credentials.md)
+
+### 12.2 Universal Capture (`/v1/inbox/...`)
+
+For sources that don't fit a polled connector — internal SIEM forwarders, syslog/CEF gateways, vendor webhooks, email alerts — `services/api` exposes a per-tenant token-authenticated webhook inbox. Each token is bound to a `template_id` (`generic-json`, `cef`, `splunk-hec`, `dns-zonefile`, `itsm-inbound`, …) that controls how the body is parsed before it hits the same OCSF normalizer.
+
+Tokens are minted via `POST /v1/inbox/tokens`, stored hashed (never plaintext), and rate-limited per token. The HMAC verification path (`X-AiSOC-Signature: sha256=<hex>`) is shared between universal capture and the ITSM inbound webhook described in §12.4.
+
+### 12.3 Tenant Lake API
+
+A scoped, tenant-isolated query surface over the OpenSearch `events-*` indices. Every query is rewritten to inject `tenant_id` as a top-level filter before reaching OpenSearch — defense in depth on top of the existing index-level RBAC. Query timeouts and result-size caps are enforced per-tenant.
+
+### 12.4 Case Fan-out and Bidirectional ITSM (WS8)
+
+AiSOC is the **source of truth** for case state. ITSM systems (Jira, ServiceNow) are projections — analysts working in their familiar ticket UI still see correct context, but the canonical state lives in AiSOC.
+
+**Outbound (AiSOC → ITSM):** When a case is created or its status changes, `services/api/app/services/case_fanout.py` looks up every connector instance the tenant has enabled with `Capability.PUSH_CASE` (or `PUSH_STATUS`) and projects the change. Successes write a row to `case_external_refs (case_id, connector_id, external_system, external_id, external_url, external_status, last_synced_at)` so subsequent updates target the correct external record. Failures are logged but never block the AiSOC case write — the canonical state is already durable.
+
+**Inbound (ITSM → AiSOC):** A public-facing webhook at `POST /v1/inbox/itsm` accepts Jira and ServiceNow status-change payloads. The endpoint:
+
+1. Verifies the per-tenant HMAC (`X-AiSOC-Signature`).
+2. Parses the vendor-specific payload (`issue.key` + `issue.fields.status.name` for Jira; `sys_id` + `state` for ServiceNow).
+3. Maps the vendor status into the AiSOC enum via `_JIRA_INBOUND_STATUS` / `_SNOW_INBOUND_STATUS`.
+4. Looks up the matching `case_external_refs` row to find the AiSOC `case_id`.
+5. Idempotently applies the status change to the AiSOC case (no-op if the case is already in that state).
+
+The mapping is intentionally lossy in one direction: vendor-specific fields (Jira priority, ServiceNow assignment_group, etc.) are **not** synced back into AiSOC. The contract is "case status converges, ITSM-specific metadata stays in ITSM."
+
+→ [ITSM as a projection of AiSOC (full architecture doc)](../../apps/docs/docs/architecture/itsm-as-source-of-truth.md)
+
+### 12.5 Test Coverage
+
+The v2.1 surfaces ship with focused unit tests rather than mocked integration tests against live vendor APIs:
+
+| Surface | Tests | Location |
+|---------|-------|----------|
+| Inbound ITSM webhook | 69 | `services/api/tests/test_inbox_itsm_endpoint.py` |
+| Case fan-out | 21 | `services/api/tests/test_case_fanout.py` |
+| `push_case` / `push_status_change` (Jira + ServiceNow) | 23 | `services/connectors/tests/test_push_capabilities.py` |
+| **Total** | **113** | |
+
+All 113 are passing on the current `main`. Vendor HTTP calls are mocked at the `httpx.AsyncClient` layer; database calls are mocked at the SQLAlchemy `text(...).bindparams(...)` layer with a `_bind_params` helper that tolerates SQLAlchemy 2.x.
+
+### 12.6 Plugin SDK and Marketplace
+
+Connectors are also the unit of distribution. Every connector ships a marketplace manifest at `plugins/<connector-id>/plugin.yaml` mirroring its `schema()`. The marketplace index at `marketplace/index.json` is synced to `apps/web/public/marketplace/` via `pnpm marketplace:sync` and consumed by the in-app connector picker. Third-party authors can ship plugins via the same SDK without modifying core.
+
+→ [Plugin SDK (Python)](../../apps/docs/docs/plugins/python-sdk.md)
+→ [Plugin SDK (Go)](../../apps/docs/docs/plugins/go-sdk.md)
+

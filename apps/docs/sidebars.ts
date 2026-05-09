@@ -23,9 +23,15 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Architecture",
+      items: ["architecture/itsm-as-source-of-truth"],
+    },
+    {
+      type: "category",
       label: "Connectors",
       items: [
         "connectors/index",
+        "connectors/api-coverage",
         "connectors/universal-capture",
         "connectors/azure-entra",
         "connectors/azure-activity",
@@ -42,7 +48,11 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "Operations",
-      items: ["operations/credentials", "operations/airgap"],
+      items: [
+        "operations/credentials",
+        "operations/airgap",
+        "operations/sonali-consultation-questions",
+      ],
     },
     {
       type: "category",

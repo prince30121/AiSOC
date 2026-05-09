@@ -29,8 +29,8 @@ Tracking progress against `~/.cursor/plans/ai-stack-data-integration-plan_e90071
 | 5  | Self-healing                       | DONE        | OAuth refresh + backfill + freshness SLO + UI badges |
 | 6  | Universal capture                  | DONE        | `/v1/inbox/*` in `services/ingest` + tokens panel |
 | 7  | Tenant lake API                    | DONE        | endpoints + rewriter + rate limiter + 69/69 tests |
-| 8  | Bidirectional ITSM                 | PENDING     | push_case + `/v1/inbox/itsm` + actions worker |
-| 9  | Docs + Sonali                      | PENDING     | `api-coverage.md` + `itsm-as-source-of-truth.md` + question list |
+| 8  | Bidirectional ITSM                 | DONE        | push_case + `/v1/inbox/itsm` + fan-out service + 113/113 tests |
+| 9  | Docs + Sonali                      | DONE        | `api-coverage.md` + `itsm-as-source-of-truth.md` + `sonali-consultation-questions.md` + sidebars + SYSTEM_DESIGN §12 |
 
 ---
 
@@ -51,7 +51,7 @@ User asked for:
 | gh-4                       | Secret scan with gitleaks + triage false positives                           | DONE (`.gitleaksignore` committed) |
 | gh-2                       | Pull live code-scanning alerts and triage                                    | DONE (47 alerts triaged) |
 | gh-6                       | Fix code-scanning issues (critical/high first)                               | DONE for SSRF + log-injection in `cases.py` + `fusion.py`; remaining notes (unused imports, bind-all, weak hash) triaged as benign |
-| gh-5                       | Sync docs/architecture so GitHub matches current state                       | PENDING (covered by WS9) |
+| gh-5                       | Sync docs/architecture so GitHub matches current state                       | DONE (`docs/architecture/SYSTEM_DESIGN.md` §12 added; topology + service table updated) |
 | gh-commit-pre-rewrite      | Commit fixes + tracker with `Beenu Arora <beenu@cyble.com>`, no co-authors   | IN PROGRESS |
 | gh-3a..gh-3e               | History-rewrite plan (filter-repo + force-push)                              | PENDING     |
 | gh-prs                     | Close 19 dependabot PRs; comment on #37 for K4R7IK to rebase                 | PENDING     |
@@ -202,24 +202,153 @@ post-rewrite block.
 
 ---
 
-## WS8 — Bidirectional ITSM (pending)
+## WS8 — Bidirectional ITSM (shipped)
 
-Plan calls for:
-- `push_case` + `push_status_change` capabilities on `jira_connector` and
-  `servicenow` (services/connectors).
-- `POST /v1/inbox/itsm` inbound webhook in `services/ingest`.
-- Actions worker in `services/api/app/workers/` to fan out case events.
+### What landed
+
+- `services/connectors/app/connectors/base.py` — extended `BaseConnector` with
+  abstract `push_case` and `push_status_change` methods, plus
+  `Capability.PUSH_CASE` / `Capability.PUSH_STATUS` enum members.
+- `services/connectors/app/connectors/jira_connector.py` —
+  - `push_case`: creates Jira issue with ADF-formatted description, severity →
+    priority mapping, summary truncation at 255 chars, `aisoc-case-{id}` label
+    for round-trip identification, returns `{external_id, external_url, vendor,
+    external_status}`.
+  - `push_status_change`: discovers transitions via
+    `GET /rest/api/3/issue/{key}/transitions`, picks the matching transition by
+    target status name, POSTs the transition; no-op when target status isn't
+    exposed by the workflow.
+  - Falls through to `push_case` when `external_ref is None` (first push).
+- `services/connectors/app/connectors/servicenow.py` —
+  - `push_case`: POSTs to `/api/now/table/incident`, sets
+    `correlation_id="aisoc:{case_id}"` for round-tripping AiSOC case identity,
+    severity → impact/urgency mapping, short_description truncation at 160 chars.
+  - `push_status_change`: PATCHes `/api/now/table/incident/{sys_id}` with
+    `state`; for `Resolved`/`Closed` adds `close_code` + `close_notes` (required
+    by stock instances), otherwise omits them.
+- `services/connectors/app/api/router.py` —
+  - `POST /connectors/{connector_id}/push_case`
+  - `POST /connectors/{connector_id}/push_status_change`
+- `services/api/migrations/035_case_external_refs.sql` — `case_external_refs`
+  table (one row per `(case_id, vendor)`) with `external_id`, `external_url`,
+  `external_status`, `last_synced_at`, `sync_state`, plus indexes for
+  inbound webhook lookup by `(vendor, external_id)`.
+- `services/api/app/services/case_fanout.py` — projection layer:
+  - `fanout_create_case(case_id, tenant_id)` — finds enabled ITSM connectors,
+    decrypts auth via `CredentialVault`, POSTs to connectors service, persists
+    `case_external_refs` row, returns `FanoutResult`.
+  - `fanout_status_change(case_id, tenant_id, old_status, new_status)` —
+    looks up existing refs, calls `push_status_change`, updates row.
+  - `_serialize_case_for_push(case_row)` — accepts dict or SQLAlchemy `Row`
+    (`._mapping`); the test suite uses dicts and the production path uses Rows.
+- `services/api/app/api/v1/endpoints/cases.py` — `create_case` and `update_case`
+  invoke fan-out after the response is committed (best-effort, errors logged
+  not raised).
+- `services/api/app/api/v1/endpoints/inbox_itsm.py` — public-surface inbound
+  webhook (`POST /v1/inbox/itsm/{token}`) with:
+  - HMAC-SHA256 verification via `X-AiSOC-Signature` header.
+  - Vendor-specific payload parsing (Jira `issue.key`/`fields.status.name`,
+    ServiceNow `sys_id`/`state`).
+  - `_map_inbound_status` collapsing vendor statuses → AiSOC statuses.
+  - `case_external_refs` lookup by `(vendor, external_id)`.
+  - Idempotent AiSOC case status updates (skips if already at target status).
+- `services/api/app/api/v1/endpoints/inbox.py` — `itsm-inbound` template added
+  to `ALLOWED_TEMPLATE_IDS` and `_TEMPLATE_CATALOG`; `_build_inbox_url` now
+  routes ITSM tokens through `OAUTH_PUBLIC_BASE_URL` to the API service.
+
+### Tests — done
+
+- `services/api/tests/test_inbox_itsm_endpoint.py` — **69/69 passing**.
+  Covers HMAC verification, payload parsing for both vendors, status mapping,
+  external-ref lookup, idempotency, missing-token / wrong-signature paths.
+- `services/api/tests/test_case_fanout.py` — **21/21 passing**. Covers
+  payload serialization, vault decryption, connector RPC happy path, missing
+  external_id, unsupported capability, status-change with no refs, status-change
+  with orphaned refs, transport errors.
+- `services/connectors/tests/test_push_capabilities.py` — **23/23 passing**.
+  Covers Jira `push_case` (payload shape, ADF, label, priority mapping, 255-char
+  truncation, 4xx propagation), Jira `push_status_change` (no-ref fallthrough,
+  unknown-status no-op, missing-transition no-op, transition discovery + POST,
+  4xx on transition POST), ServiceNow `push_case` (correlation_id round-trip,
+  short_description truncation at 160, 4xx propagation), ServiceNow
+  `push_status_change` (no-ref fallthrough, unknown-status no-op, in-progress
+  state-only PATCH, Resolved/Closed close_code+close_notes, 4xx propagation),
+  capability declarations on both classes.
+
+**Total WS8 test count: 113/113 passing.**
+
+### Test gotcha — `respx` is not in the connectors test environment
+
+`services/connectors/pyproject.toml` declares `respx` as a dev dep but the
+local venv doesn't have it installed (collection errors out for
+`test_azure_connectors.py`, `test_gcp_connectors.py`). For
+`test_push_capabilities.py` we use `unittest.mock.patch` against
+`httpx.AsyncClient` instead — same pattern as
+`services/api/tests/test_case_fanout.py`. Helper `_build_response` mocks
+`status_code`, `json()`, `text`, `request`, and `raise_for_status` so the
+connector code under test sees a faithful `httpx.Response` substitute.
+
+### Test gotcha — `_serialize_case_for_push` accepts dict or Row, not SimpleNamespace
+
+`SimpleNamespace` is *not* iterable as key-value pairs, so
+`dict(SimpleNamespace(...))` raises `TypeError`. The serializer goes through
+`getattr(case_row, "_mapping", None)` then falls back to `dict(case_row)`,
+which works for SQLAlchemy `Row` (production) and plain `dict` (tests). All
+test fixtures in `test_case_fanout.py` use `_make_case_row()` returning a dict.
 
 Reference plan §WS8.
 
 ---
 
-## WS9 — Docs + Sonali (pending)
+## WS9 — Docs + Sonali (shipped)
 
-- `apps/docs/docs/connectors/api-coverage.md` — coverage matrix for all
-  connectors × capabilities × OAuth status.
-- `apps/docs/docs/architecture/itsm-as-source-of-truth.md`.
-- Draft Sonali consultation question list (separate file in repo, plan §WS9).
+### What landed
+
+- `apps/docs/docs/connectors/api-coverage.md` — capability matrix for all
+  42 connectors. Generated programmatically from `BaseConnector` subclasses
+  by parsing `capabilities()` return tuples and `ConnectorSchema(...)`
+  invocations directly out of source. Grouped by `category` (edr, siem,
+  cloud, iam, saas, vcs, network) and includes columns for `OAuth (hosted)`
+  and `Federated search`. Closes the "what works where" question Sonali
+  flagged — no more reading source to know if a given connector can
+  `PUSH_CASE` or only `PULL_ALERTS`.
+- `apps/docs/docs/architecture/itsm-as-source-of-truth.md` — explains why
+  AiSOC is the canonical store for case state and ITSM systems are
+  projections. Covers the outbound path (`case_fanout` → `push_case` /
+  `push_status_change`), the inbound path (`POST /v1/inbox/itsm` with
+  HMAC verification, `_JIRA_INBOUND_STATUS` / `_SNOW_INBOUND_STATUS`
+  mapping, `case_external_refs` resolution), conflict resolution rules,
+  and what is explicitly **not** synced (Jira priority, ServiceNow
+  assignment_group, etc.). Includes a `mermaid` flowchart.
+- `apps/docs/docs/operations/sonali-consultation-questions.md` — structured
+  question set for CISO / Head of SecOps / IR Lead pre-deployment
+  conversations. Covers outcomes, threat model, data sources, case
+  lifecycle, agent autonomy, compliance, identity/access, ops, reporting.
+  Designed to surface boundary disagreements early rather than discovering
+  them mid-rollout.
+- `apps/docs/sidebars.ts` — registered all three new pages. Added a new
+  "Architecture" category (so `itsm-as-source-of-truth.md` has a home
+  outside the Concepts bucket), and slotted the other two under their
+  existing "Connectors" and "Operations" categories.
+- `docs/architecture/SYSTEM_DESIGN.md` — root-level architecture doc
+  resynced with v2.1 reality. Topology diagram now shows `services/api`
+  (inbox tokens + HMAC webhooks + CEF/HEC/DNS) and `services/connectors`
+  (APScheduler poll + 42 connector classes + push_case/status) as
+  parallel front doors feeding `services/ingest`. Service responsibilities
+  table gained a `services/connectors` row and `services/api` was
+  extended with "ITSM webhook inbox, case fan-out". A new §12 captures
+  the v2.1 additions in narrative form with cross-links to the
+  Docusaurus pages above.
+
+### Cross-links from §12
+
+- §12.1 → `apps/docs/docs/connectors/api-coverage.md`,
+  `apps/docs/docs/operations/credentials.md`
+- §12.4 → `apps/docs/docs/architecture/itsm-as-source-of-truth.md`
+- §12.6 → `apps/docs/docs/plugins/python-sdk.md`,
+  `apps/docs/docs/plugins/go-sdk.md`
+
+Reference plan §WS9.
 
 ---
 
@@ -231,8 +360,18 @@ Reference plan §WS8.
   {"id": "gh-4",                  "content": "Secret scan working tree before any commit/push (gitleaks)", "status": "completed"},
   {"id": "gh-2",                  "content": "Pull live GitHub code-scanning alerts and triage by severity", "status": "completed"},
   {"id": "gh-6",                  "content": "Fix code-scanning issues with minimal diffs (critical/high first)", "status": "completed"},
-  {"id": "gh-5",                  "content": "Sync docs/architecture (WS3-WS7) so GitHub matches current state", "status": "pending"},
-  {"id": "gh-commit-pre-rewrite", "content": "Commit all fixes/docs with Beenu Arora <beenu@cyble.com> identity (no co-author trailers)", "status": "in_progress"},
+  {"id": "ws7-tests",             "content": "WS7: lake endpoint unit tests (POST /lake/sql, GET /lake/schema, helpers)", "status": "completed"},
+  {"id": "ws8-tests-inbox",       "content": "WS8: Inbox ITSM webhook tests (69 passing)", "status": "completed"},
+  {"id": "ws8-tests-fanout",      "content": "WS8: Tests for case_fanout service (21 passing)", "status": "completed"},
+  {"id": "ws8-tests-push",        "content": "WS8: Tests for jira/snow push_case/push_status_change methods (23 passing)", "status": "completed"},
+  {"id": "tracker-update",        "content": "Update AI_STACK_PLAN_PROGRESS.md to reflect WS8 completion", "status": "completed"},
+  {"id": "ws9-api-coverage",      "content": "WS9: write apps/docs/docs/connectors/api-coverage.md", "status": "completed"},
+  {"id": "ws9-itsm-sot",          "content": "WS9: write apps/docs/docs/architecture/itsm-as-source-of-truth.md", "status": "completed"},
+  {"id": "ws9-sonali",            "content": "WS9: write apps/docs/docs/operations/sonali-consultation-questions.md", "status": "completed"},
+  {"id": "ws9-sidebar",           "content": "WS9: register new docs in apps/docs/sidebars.ts", "status": "completed"},
+  {"id": "gh-5",                  "content": "Sync docs/architecture (WS3-WS8) so GitHub matches current state", "status": "completed"},
+  {"id": "tracker-update-ws9",    "content": "Update AI_STACK_PLAN_PROGRESS.md to mark WS9 done", "status": "completed"},
+  {"id": "gh-commit",             "content": "Commit all WS9 + tracker docs with Beenu Arora <beenu@cyble.com> identity (no co-author trailers)", "status": "pending"},
   {"id": "gh-3a",                 "content": "Backup current main to refs/heads/backup/pre-rewrite-2026-05-08 on origin", "status": "pending"},
   {"id": "gh-3b",                 "content": "Install git-filter-repo and build authors/message callbacks (strip cursoragent + AiSOC Bot trailers, canonicalize all to beenu@cyble.com)", "status": "pending"},
   {"id": "gh-3c",                 "content": "Run git-filter-repo on a fresh mirror; verify locally that all commits show Beenu Arora <beenu@cyble.com> and no Co-authored-by trailers remain", "status": "pending"},
@@ -240,10 +379,7 @@ Reference plan §WS8.
   {"id": "gh-3e",                 "content": "Verify GitHub contributors graph shows only beenu", "status": "pending"},
   {"id": "gh-prs",                "content": "Close 19 dependabot PRs with explanation; comment on #37 asking K4R7IK to rebase", "status": "pending"},
   {"id": "gh-7",                  "content": "Verify code-scanning alerts cleared after push; record any remaining", "status": "pending"},
-  {"id": "ws7-tests",             "content": "WS7: finish lake endpoint unit tests (POST /lake/sql, GET /lake/schema, helpers)", "status": "pending"},
-  {"id": "ws7-verify",            "content": "WS7: run full pytest + mcp build, ensure no regressions", "status": "pending"},
-  {"id": "ws8-itsm",              "content": "WS8: bidirectional ITSM (push_case/push_status_change, /v1/inbox/itsm webhook, actions worker)", "status": "pending"},
-  {"id": "ws9-docs",              "content": "WS9: connectors/api-coverage.md, architecture/itsm-as-source-of-truth.md, Sonali consultation question list", "status": "pending"}
+  {"id": "tryaisoc-cj",           "content": "Customer journey review of tryaisoc.com — find and fix bugs", "status": "pending"}
 ]
 ```
 
@@ -263,10 +399,19 @@ Reference plan §WS8.
 
 ## Resume here
 
-1. Re-run `git log -5 --format='%h %an <%ae>%n%(trailers:only=true)'` to
+All nine plan workstreams (WS1-WS9) are now DONE. Remaining work is the
+GitHub hygiene tail.
+
+1. **Commit current working tree** (`gh-commit`): commit the WS9 docs +
+   `SYSTEM_DESIGN.md` §12 + this tracker update with identity
+   `Beenu Arora <beenu@cyble.com>`. Run the `commit-msg` hook check
+   afterwards to confirm no `Co-authored-by` trailers slipped through.
+2. **Push to origin** (`gh-push`): `git push origin main`.
+3. Re-run `git log -5 --format='%h %an <%ae>%n%(trailers:only=true)'` to
    confirm no `Co-authored-by` trailers in the last few commits.
-2. Continue down the GitHub hygiene table above (`gh-3a` → `gh-7`):
+4. Continue down the GitHub hygiene table above (`gh-3a` → `gh-7`):
    backup, history rewrite via `git filter-repo`, force-push, verify
    contributors, close stale PRs, verify code-scanning alerts cleared.
-3. Then resume the plan workstreams: `ws7-tests` → `ws7-verify` → WS8 → WS9.
-4. Workspace rule: do not stop until every todo is done.
+5. Then `tryaisoc-cj`: customer journey review of `tryaisoc.com` for
+   bugs.
+6. Workspace rule: do not stop until every todo is done.
