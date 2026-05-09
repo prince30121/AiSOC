@@ -61,7 +61,7 @@ User asked for:
 | gh-7c                      | Fix/dismiss 3 `py/incomplete-url-substring-sanitization` alerts              | DONE        |
 | gh-7d                      | Dismiss CodeQL false positives with rationales                               | DONE        |
 | gh-7e                      | Clean up note-level alerts (unused imports/vars, empty except)               | DONE        |
-| tryaisoc-cj                | Customer journey review of tryaisoc.com — find and fix bugs                  | IN PROGRESS |
+| tryaisoc-cj                | Customer journey review of tryaisoc.com — find and fix bugs                  | DONE        |
 
 ### Co-author trailer issue (resolved at the local layer)
 
@@ -386,7 +386,7 @@ Reference plan §WS9.
   {"id": "gh-prs",                "content": "Close 19 dependabot PRs with explanation; comment on #37 asking K4R7IK to rebase", "status": "completed"},
   {"id": "gh-7",                  "content": "Verify code-scanning alerts cleared after push; record any remaining (3 false positives dismissed; 0 open high/medium/error)", "status": "completed"},
   {"id": "gh-ci-identity",        "content": "Patch CI workflows so machine commits use Beenu Arora identity", "status": "completed"},
-  {"id": "tryaisoc-cj",           "content": "Customer journey review of tryaisoc.com — find and fix bugs", "status": "in_progress"}
+  {"id": "tryaisoc-cj",           "content": "Customer journey review of tryaisoc.com — find and fix bugs", "status": "completed"}
 ]
 ```
 
@@ -404,45 +404,95 @@ Reference plan §WS9.
 
 ---
 
-## Resume here
+## tryaisoc-cj findings (closeout)
 
-All nine plan workstreams (WS1-WS9) and the entire GitHub hygiene tail
-(`gh-1` … `gh-7`, `gh-ci-identity`) are now DONE. The history rewrite
-landed cleanly, contributors graph shows only `beenu`, and CodeQL is
-green (0 open high/medium/error alerts; 3 medium false positives
-dismissed with rationale).
+`tryaisoc-cj` is DONE. All nine plan workstreams (WS1-WS9), the
+GitHub hygiene tail (`gh-1` … `gh-7`, `gh-ci-identity`), and the
+customer-journey review of `https://tryaisoc.com` have shipped. The
+history rewrite landed cleanly, contributors graph shows only
+`beenu`, CodeQL is green (0 open high/medium/error alerts; 3 medium
+false positives dismissed with rationale), and the public site is
+verified clean on every canonical path the UI actually links to.
 
-The single remaining workstream is `tryaisoc-cj`: a customer journey
-review of `https://tryaisoc.com` to find and fix bugs.
+### Bugs found and fixed
 
-### tryaisoc-cj plan
+P0 / P1 only. P2 polish was deferred — none was blocking a customer
+journey.
 
-1. **Inventory the live surface.** Crawl `tryaisoc.com` from a clean
-   browser context (cursor-ide-browser MCP). Capture the IA, marketing
-   pages, docs entry points, demo CTA, signup/login flows, and any
-   product surface that is exposed to anonymous visitors. Take
-   screenshots + console/network logs.
-2. **Walk each persona path.**
-   - Anonymous visitor → home → "How it works" → docs → demo CTA.
-   - Prospective customer → "Book demo" / contact form → confirm form
-     submits or fails gracefully.
-   - Developer → docs site (`docs.tryaisoc.com` or sub-route) → quick
-     start → SDK install snippet → API reference.
-   - Self-serve trial (if exposed) → signup → tenant bootstrap →
-     first connector.
-3. **Bug taxonomy.** For each issue, capture: severity (P0 / P1 / P2),
-   page URL, repro steps, expected vs actual, console errors, network
-   failures, screenshot. P0 = broken core flow (signup/demo/docs 500).
-   P1 = visible UX defect on a public page. P2 = polish.
-4. **Fix in repo.** Most marketing copy, docs, and routing live in
-   `apps/web` and `apps/docs`. Apply minimal diffs per bug, run the
-   relevant `pnpm` lint/typecheck, and commit each fix as
-   `Beenu Arora <beenu@cyble.com>` with no co-author trailers.
-5. **Re-verify after deploy.** After push lands and the deploy
-   completes, re-run the same browser sweep on the fixed paths to
-   confirm green state.
-6. **Update this tracker.** Append a `tryaisoc-cj findings` subsection
-   (URL, severity, fix commit) and flip `tryaisoc-cj` to DONE only
-   when every P0/P1 has shipped.
+| #  | Severity | URL                                              | Symptom                                                                     | Fix commit | Verified                |
+| -- | -------- | ------------------------------------------------ | --------------------------------------------------------------------------- | ---------- | ----------------------- |
+| 1  | P0       | `/cases/INC-001?tab=ledger`                      | "Ledger unavailable" — `GET /api/v1/investigations` 405                     | `a8f08c4`  | endpoint returns 200    |
+| 2  | P0       | `/api/v1/marketplace`                            | 503 "marketplace/index.json not found" (file outside Docker build context)  | `8328870`  | endpoint returns 200    |
+| 3  | P0       | API service boot                                 | FastAPI `AssertionError` on 204 route (`oauth.py` DELETE) crashed startup   | `8328870`  | `/health` returns 200   |
+| 4  | P1       | Case workspace + Hunt view (demo mode)           | UI banner + toasts said "backend offline" when only writes are disabled     | `a8f08c4`  | copy reads correctly    |
+| 5  | P1       | `sitemap.xml`                                    | `/signup` listed in sitemap but route is 404 (AiSOC ships no signup)        | `a8f08c4`  | sitemap clean           |
+| 6  | P1       | `/onboarding` "Run a detection" card             | Linked to `/detections` (plural) — 404. Correct path is `/detection`        | `d3240a7`  | card now links to 200   |
+| 7  | P1       | `/onboarding` "Bring your own data" card         | Linked to in-app `/docs/operations/credentials` — 404 (docs are external)   | `d3240a7`  | links to GH Pages docs  |
+| 8  | P1       | `NextStepCard` component                         | Used `next/link` for cross-origin docs URL; would break target=_blank       | `d3240a7`  | external `<a>` rendered |
 
-Workspace rule: do not stop until every todo is done.
+### Fix commits
+
+- `a8f08c4` — fix(web): customer-journey bugs — ledger routing, demo
+  copy, /signup 404
+- `8328870` — fix(api): unblock startup + bake marketplace/index.json
+  into api build
+- `d3240a7` — fix(web/onboarding): two 404s in NextStepCard footer
+
+All three authored as `Beenu Arora <beenu@cyble.com>` with no
+co-author trailers, deployed to `aisoc-demo-web` and `aisoc-demo-api`
+on Fly, and verified live on `tryaisoc.com`.
+
+### Post-deploy verification sweep
+
+Probed every canonical sitemap route and every `/api/v1/*` endpoint
+the UI actually calls. All return `200`.
+
+Frontend (15 paths from `apps/web/src/app/sitemap.ts`):
+`/`, `/benchmark`, `/connectors`, `/purple-team`, `/responder`,
+`/why-open-source`, `/marketplace`, `/compliance`, `/hunt`,
+`/copilot`, `/graph`, `/login`, `/detection`, `/threat-intel`,
+`/sla` — all 200.
+
+API endpoints the UI calls (7 paths, via `tryaisoc.com` rewrites):
+`/api/v1/cases`, `/api/v1/investigations`, `/api/v1/connectors`,
+`/api/v1/detection/rules`, `/api/v1/marketplace`,
+`/api/v1/marketplace/installed`, `/api/v1/contextual/actions` —
+all 200.
+
+Direct API health (`api.tryaisoc.com` / Fly app domain):
+`/health` — 200.
+
+### Non-bugs (404s that are correct)
+
+These paths return 404 because they are intentionally not part of the
+product surface. Recorded here so a future review does not re-open
+them:
+
+- `/signup`, `/pricing`, `/about` — AiSOC is open source and
+  self-hosted; the only auth entry is `/login`, and the demo lands
+  anonymously via the home-page CTA. The hero copy and the
+  why-open-source page both state "No signup."
+- `/docs`, `/docs-portal` — documentation is hosted separately on
+  GitHub Pages and `docs.tryaisoc.com` (cloudflared tunnel to the
+  Docusaurus app). The Next.js app deliberately does not serve
+  `/docs/*`. All in-app links to docs now use absolute URLs to the
+  external host.
+- `/detections` (plural), `/runbooks`, `/agents`, `/admin/oauth`,
+  `/investigations`, `/maintenance` — not listed in `sitemap.ts` and
+  not linked from any UI component under `apps/web/src/`.
+- `/api/v1/incidents`, `/api/v1/detections`, `/api/v1/runbooks`,
+  `/api/v1/agents/runs`, `/api/v1/contextual/health`,
+  `/api/v1/contextual/orgs`, `/api/v1/oauth/apps` — not implemented
+  on the API service and not called by the UI. The real names are
+  `/api/v1/cases`, `/api/v1/detection/rules`, and the contextual
+  endpoints listed above.
+
+### Outstanding non-blocker
+
+`flyctl deploy` for `aisoc-demo-web` returned a client-side timeout
+warning ("the app is not listening on the expected address") on the
+last roll-out, but the new image is live and all post-deploy probes
+pass. Recorded here so a future deploy can investigate the listener
+warning, but it is not gating the customer journey.
+
+Workspace rule: do not stop until every todo is done. → done.
