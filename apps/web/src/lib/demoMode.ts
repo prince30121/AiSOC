@@ -46,11 +46,15 @@ export function demoBannerMessage(): string {
 
 /**
  * Deeplink to land visitors directly on a live, mid-investigation view.
- * Default targets `/cases/INC-001?tab=ledger` because the seed kicks off
- * an investigation against `INC-001` and the ledger tab streams events.
+ *
+ * Default targets `/cases/INC-RT-001?tab=ledger` — the in-flight LockBit 3.0
+ * ransomware investigation seeded by `services/api/app/scripts/seed_demo.py`.
+ * `INC-RT-001` is the showcase scenario: detector fired moments ago, encryption
+ * is in progress, and the ledger streams the agent's live decisions. Operators
+ * can override with `NEXT_PUBLIC_DEMO_DEEPLINK` to feature a different incident.
  */
 export function demoDeeplink(): string {
-  return process.env.NEXT_PUBLIC_DEMO_DEEPLINK?.trim() || '/cases/INC-001?tab=ledger';
+  return process.env.NEXT_PUBLIC_DEMO_DEEPLINK?.trim() || '/cases/INC-RT-001?tab=ledger';
 }
 
 /**

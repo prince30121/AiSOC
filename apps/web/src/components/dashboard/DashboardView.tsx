@@ -8,6 +8,7 @@ import dynamic from 'next/dynamic';
 import { format } from 'date-fns';
 import { LiveFeedPanel } from './LiveFeedPanel';
 import { SOCMetricsDashboard } from './SOCMetricsDashboard';
+import { DashboardWelcome } from './DashboardWelcome';
 
 const RechartsArea = dynamic(
   () => import('recharts').then((m) => {
@@ -236,6 +237,7 @@ export function DashboardView() {
   return (
     <DashboardErrorBoundary>
       <div className="space-y-5">
+        <DashboardWelcome />
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
