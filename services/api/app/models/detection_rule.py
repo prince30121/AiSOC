@@ -43,6 +43,12 @@ class DetectionRule(Base):
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)  # Platform-provided vs custom
     version: Mapped[int] = mapped_column(Integer, default=1)
 
+    # Provenance for imported rules (Sigma bulk import, etc.).
+    # Empty dict for native rules; populated for anything that came in
+    # through ``app.services.detections.sigma_import``. See migration
+    # 036_detection_rule_provenance.sql for the shape and indexing strategy.
+    provenance: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
