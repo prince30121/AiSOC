@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -29,6 +29,10 @@ class SentinelOneConnector(BaseConnector):
     connector_id = "sentinelone"
     connector_name = "SentinelOne"
     connector_category = "edr"
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        return (Capability.PULL_ALERTS,)
 
     @classmethod
     def schema(cls) -> ConnectorSchema:

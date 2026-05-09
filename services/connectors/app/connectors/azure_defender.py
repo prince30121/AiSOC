@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -63,6 +63,11 @@ class AzureDefenderConnector(BaseConnector):
                 scopes=["https://graph.microsoft.com/SecurityAlert.Read.All"],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Microsoft 365 Defender unified alerts feed.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str):
         self._tenant_id = tenant_id

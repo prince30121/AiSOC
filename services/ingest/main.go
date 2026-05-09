@@ -14,9 +14,11 @@ import (
 
 	"github.com/beenuar/aisoc/services/ingest/internal/config"
 	"github.com/beenuar/aisoc/services/ingest/internal/handler"
+	"github.com/beenuar/aisoc/services/ingest/internal/inbox"
 	"github.com/beenuar/aisoc/services/ingest/internal/normalizer"
 	"github.com/beenuar/aisoc/services/ingest/internal/publisher"
 	"github.com/beenuar/aisoc/services/ingest/internal/server"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -49,7 +51,40 @@ func main() {
 
 	h := handler.New(norm, pub, cfg)
 
-	srv := server.New(cfg, h)
+	// Workstream 6 — universal capture push paths.
+	//
+	// We need a Postgres pool to resolve inbox tokens and a YAML registry
+	// to find the matching template. Both are optional in dev (no
+	// DATABASE_DSN means /v1/inbox/* is disabled but /v1/ingest still
+	// works, so the connector path keeps running).
+	var inboxHandler *inbox.Handler
+	if cfg.InboxEnabled && cfg.DatabaseDSN != "" {
+		poolCtx, poolCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pool, err := pgxpool.New(poolCtx, cfg.DatabaseDSN)
+		poolCancel()
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to connect to Postgres for inbox; /v1/inbox/* disabled")
+		} else {
+			defer pool.Close()
+			store := inbox.NewStore(pool)
+			registry := inbox.NewRegistry()
+			if err := registry.Load(cfg.InboxTemplatesDir); err != nil {
+				log.Warn().Err(err).Str("dir", cfg.InboxTemplatesDir).
+					Msg("Failed to load inbox templates; /v1/inbox/* will return 503 for unknown templates")
+			}
+			log.Info().
+				Strs("templates", registry.IDs()).
+				Int64("max_body_bytes", cfg.InboxMaxBodyBytes).
+				Msg("inbox: universal-capture push paths enabled")
+			inboxHandler = inbox.NewHandler(store, registry, pub, cfg.InboxMaxBodyBytes)
+		}
+	} else if !cfg.InboxEnabled {
+		log.Info().Msg("inbox: disabled via INBOX_ENABLED=false")
+	} else {
+		log.Info().Msg("inbox: skipped (no DATABASE_DSN)")
+	}
+
+	srv := server.New(cfg, h, inboxHandler)
 
 	// Graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

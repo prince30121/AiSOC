@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -72,13 +72,23 @@ class GitHubConnector(BaseConnector):
                     ),
                 ),
             ],
+            # Hosted OAuth (Workstream 2): GitHub supports OAuth 2.0 for
+            # both OAuth Apps and GitHub Apps. We use the OAuth App flow
+            # because it's the simpler one — operators register an OAuth
+            # app in their org settings, paste client_id + client_secret
+            # into the per-tenant vault, and we drive the round-trip.
             oauth=OAuthHints(
-                supported_in_hosted=False,
+                supported_in_hosted=True,
                 authorize_url="https://github.com/login/oauth/authorize",
                 token_url="https://github.com/login/oauth/access_token",
-                scopes=["read:audit_log", "security_events"],
+                scopes=["read:audit_log", "security_events", "repo"],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # GitHub org audit log + code-scanning / secret-scanning alerts.
+        return (Capability.PULL_AUDIT, Capability.PULL_ALERTS)
 
     def __init__(self, organization: str, token: str):
         self._org = organization

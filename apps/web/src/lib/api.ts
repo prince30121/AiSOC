@@ -1049,6 +1049,32 @@ export interface Connector {
   };
   /** Cumulative count of events the pre-ingest filter dropped. */
   eventsDropped?: number;
+  /**
+   * Timestamp of the most recently *ingested* normalized event.
+   *
+   * Distinct from `lastSync`, which advances on every poll cycle.
+   * `lastEventAt` only advances when an event actually lands — it's
+   * what feeds the freshness-SLO badge in the connectors list and
+   * the onboarding "verify data flowing" screen.
+   */
+  lastEventAt?: string;
+  /** Short label for the most recent event source (e.g. "alert", "audit"). */
+  lastEventKind?: string;
+  /**
+   * Live freshness SLO verdict for the connector instance (Workstream 5).
+   *
+   * The server computes this from ``lastEventAt`` against a per-category
+   * cadence table (5 min for EDR, 15 min for SIEM, etc.) so a single
+   * Splunk that polls slowly doesn't drag the whole fleet to yellow. The
+   * UI badge renders directly from ``status`` — no client-side rule
+   * duplication so a future cadence change ships in one place.
+   */
+  freshness?: {
+    status: 'green' | 'yellow' | 'red' | 'unknown';
+    expected_cadence_seconds: number;
+    seconds_since_last_event: number | null;
+    category: string;
+  };
 }
 
 export interface ConnectorsResponse {
@@ -1126,6 +1152,22 @@ interface BackendConnectorResponse {
     previous_fingerprint?: string;
   } | null;
   events_dropped?: number | null;
+  // Workstream 1: distinct from `last_sync` — only advances when a
+  // normalized event actually lands. The verify-data-flowing screen
+  // and freshness-SLO badge both read from here.
+  last_event_at?: string | null;
+  last_event_kind?: string | null;
+  // Workstream 5: freshness SLO computed server-side from ``last_event_at``
+  // against a per-category cadence table. Optional because the API may
+  // omit it for connectors that haven't ingested yet (the server still
+  // emits an ``unknown`` verdict, but defensive null-handling lets the
+  // UI degrade gracefully if the field is ever stripped).
+  freshness?: {
+    status: 'green' | 'yellow' | 'red' | 'unknown';
+    expected_cadence_seconds: number;
+    seconds_since_last_event: number | null;
+    category: string;
+  } | null;
 }
 
 /** Aggregated health summary for the connectors fleet (a single tenant). */
@@ -1188,6 +1230,9 @@ function mapBackendConnector(row: BackendConnectorResponse): Connector {
     lastSchemaDriftAt: row.last_schema_drift_at ?? undefined,
     lastDriftDetails: row.last_drift_details ?? undefined,
     eventsDropped: row.events_dropped ?? 0,
+    lastEventAt: row.last_event_at ?? undefined,
+    lastEventKind: row.last_event_kind ?? undefined,
+    freshness: row.freshness ?? undefined,
   };
 }
 
@@ -1212,6 +1257,51 @@ export interface TestConnectorPayload {
   connector_type: string;
   auth_config?: Record<string, unknown>;
   connector_config?: Record<string, unknown>;
+}
+
+/**
+ * Watermark response polled by the wizard's "verify data flowing" panel.
+ *
+ * The shape mirrors ``LastEventResponse`` from the API service. Note
+ * the field is intentionally distinct from ``last_sync``: ``last_sync``
+ * advances on every poll cycle (including empty polls), while
+ * ``last_event_at`` only advances when a normalized event actually
+ * lands in ``raw_events``. ``data_flowing`` is the server's own
+ * answer to "is data live?" so every client agrees on the rule.
+ */
+export interface ConnectorLastEvent {
+  connector_id: string;
+  last_event_at: string | null;
+  last_event_kind: string | null;
+  events_ingested: number;
+  last_sync: string | null;
+  health_status: string;
+  data_flowing: boolean;
+}
+
+/**
+ * Input to the AI troubleshooter. We intentionally send only the
+ * **keys** of ``auth_config`` (not values) so the backend can hint
+ * about which field to revisit without ever seeing the credential.
+ */
+export interface TroubleshootRequest {
+  connector_type: string;
+  error: string;
+  auth_config_keys?: string[];
+}
+
+/** Structured fix suggestion the wizard renders next to a failed test. */
+export interface TroubleshootResponse {
+  likely_cause: string;
+  fix_steps: string[];
+  doc_link?: string | null;
+}
+
+/** Push-token reveal response. */
+export interface IngestTokenResponse {
+  connector_id: string;
+  ingest_token: string;
+  inbox_url: string;
 }
 
 export const connectorsApi = {
@@ -1276,6 +1366,42 @@ export const connectorsApi = {
       body: JSON.stringify(payload),
     }),
 
+  /**
+   * Ask the AI troubleshooter to classify a failed test.
+   *
+   * Used by the AddConnector wizard immediately after `test` or
+   * `testInline` returns ``success=false``. Renders into the
+   * "Likely cause / fix steps / docs" callout in the modal.
+   */
+  troubleshoot: (payload: TroubleshootRequest) =>
+    request<TroubleshootResponse>('/api/v1/connectors/troubleshoot', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /**
+   * Poll the verify-data-flowing watermark for a connector.
+   *
+   * Distinct from `lastSync`: this only advances when an actual
+   * normalized event lands. Returned even when no event has ever
+   * landed (with `data_flowing=false`) so the polling loop can have
+   * stable shape rather than a 404.
+   */
+  lastEvent: (id: string) =>
+    request<ConnectorLastEvent>(`/api/v1/connectors/${id}/last_event_at`),
+
+  /**
+   * Generate or rotate the per-connector push-ingest token.
+   *
+   * Used by the wizard's "Push (any vendor)" path to surface a
+   * `curl` example. Calling this rotates the token; the previous
+   * one is invalidated immediately.
+   */
+  refreshIngestToken: (id: string) =>
+    request<IngestTokenResponse>(`/api/v1/connectors/${id}/push/refresh`, {
+      method: 'POST',
+    }),
+
   delete: (id: string) =>
     request<void>(`/api/v1/connectors/${id}`, { method: 'DELETE' }),
 
@@ -1310,6 +1436,231 @@ export const connectorsApi = {
       totalEventsIngested: raw.total_events_ingested,
       totalEventsDropped: raw.total_events_dropped,
     };
+  },
+};
+
+// ─── Universal capture / inbox tokens (Workstream 6) ───────────────────────
+
+/**
+ * Catalog entry for a vendor template the operator can pick when minting
+ * an inbox URL. Mirrors `InboxTemplateInfo` on the API side; the wizard
+ * groups by `category` to keep the picker scannable.
+ */
+export interface InboxTemplate {
+  template_id: string;
+  label: string;
+  description: string;
+  category: string;
+}
+
+/** Existing inbox token row — list view, plaintext token NOT included. */
+export interface InboxTokenListItem {
+  fingerprint: string;
+  template_id: string;
+  label: string | null;
+  has_hmac_secret: boolean;
+  created_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+/**
+ * Mint / rotate response. `token` is the plaintext (returned exactly once
+ * at mint or rotate time); `inbox_url` is the absolute URL the operator
+ * pastes into the vendor's webhook config.
+ */
+export interface InboxTokenSecret {
+  token: string;
+  inbox_url: string;
+  template_id: string;
+  label: string | null;
+  has_hmac_secret: boolean;
+  created_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+/** Body for `POST /api/v1/inbox/tokens`. */
+export interface MintInboxTokenPayload {
+  template_id: string;
+  label?: string | null;
+  hmac_secret?: string | null;
+}
+
+export const inboxApi = {
+  /** List vendor templates the operator can mint inbox URLs for. */
+  templates: () => request<InboxTemplate[]>('/api/v1/inbox/templates'),
+
+  /** List the calling tenant's inbox tokens (revoked filtered out). */
+  list: (params?: { include_revoked?: boolean }) => {
+    const qs = params?.include_revoked ? '?include_revoked=true' : '';
+    return request<InboxTokenListItem[]>(`/api/v1/inbox/tokens${qs}`);
+  },
+
+  /** Mint a new inbox token. Plaintext returned exactly once. */
+  mint: (payload: MintInboxTokenPayload) =>
+    request<InboxTokenSecret>('/api/v1/inbox/tokens', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /**
+   * Rotate an existing token: mints a new one with the same template / label
+   * / HMAC, revokes the old. Returns the new plaintext exactly once.
+   */
+  rotate: (fingerprint: string) =>
+    request<InboxTokenSecret>(
+      `/api/v1/inbox/tokens/${encodeURIComponent(fingerprint)}/rotate`,
+      { method: 'POST' },
+    ),
+
+  /** Permanently revoke an inbox token. */
+  revoke: (fingerprint: string) =>
+    request<void>(
+      `/api/v1/inbox/tokens/${encodeURIComponent(fingerprint)}`,
+      { method: 'DELETE' },
+    ),
+};
+
+// ─── Hosted OAuth (Workstream 2) ──────────────────────────────────────────────
+
+/**
+ * Per-tenant OAuth client registration, returned by GET / PUT
+ * `/api/v1/oauth/app/{connector_type}`.
+ *
+ * The secret is *never* round-tripped to the browser — only `has_secret`
+ * lets the UI render a "credential present" badge. To rotate the
+ * client_secret, call `oauthApi.upsertApp()` with a fresh value.
+ */
+export interface OAuthAppView {
+  connector_type: string;
+  client_id: string;
+  has_secret: boolean;
+  authorize_url: string | null;
+  token_url: string | null;
+  scopes: string[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Payload accepted by `PUT /api/v1/oauth/app/{connector_type}`.
+ *
+ * `authorize_url`, `token_url`, and `scopes` are optional — when omitted,
+ * the backend falls back to the connector class's `OAuthHints` defaults
+ * (e.g. Okta / Azure AD / GitHub).
+ */
+export interface OAuthAppRegistrationPayload {
+  client_id: string;
+  client_secret: string;
+  authorize_url?: string | null;
+  token_url?: string | null;
+  scopes?: string[] | null;
+}
+
+/**
+ * Response from `GET /api/v1/oauth/start?response_mode=json`.
+ *
+ * The default `response_mode=redirect` returns a 302; SPAs that want to
+ * handle the redirect themselves (e.g. open the consent screen in a
+ * popup) call with `response_mode=json` and use this shape.
+ */
+export interface OAuthStartResponse {
+  authorize_url: string;
+  state: string;
+}
+
+/**
+ * Options for `oauthApi.startUrl()` — the helper that builds the
+ * canonical `/api/v1/oauth/start?...` URL the browser navigates to.
+ *
+ * `connector_id` is set when the operator is *re-authing* an existing
+ * connector instance (token expired, scope upgrade); otherwise omit it
+ * and the callback will INSERT a fresh `connectors` row.
+ *
+ * `extras` ride along in the state row and end up in the connector's
+ * `connector_config` after callback (e.g. `organization` for GitHub,
+ * `cloud_id` for Atlassian).
+ */
+export interface OAuthStartOptions {
+  connectorType: string;
+  connectorId?: string;
+  returnTo?: string;
+  name?: string;
+  extras?: Record<string, unknown>;
+}
+
+export const oauthApi = {
+  /**
+   * Fetch the registered OAuth app for a connector class. Returns 404
+   * until the operator has called `upsertApp()` at least once.
+   */
+  getApp: (connectorType: string) =>
+    request<OAuthAppView>(
+      `/api/v1/oauth/app/${encodeURIComponent(connectorType)}`,
+    ),
+
+  /**
+   * Register or rotate the tenant's OAuth client for a connector class.
+   * The backend encrypts `client_secret` at rest via the credential vault.
+   */
+  upsertApp: (
+    connectorType: string,
+    payload: OAuthAppRegistrationPayload,
+  ) =>
+    request<OAuthAppView>(
+      `/api/v1/oauth/app/${encodeURIComponent(connectorType)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  /** Unregister the tenant's OAuth client for a connector class. */
+  deleteApp: (connectorType: string) =>
+    request<void>(
+      `/api/v1/oauth/app/${encodeURIComponent(connectorType)}`,
+      { method: 'DELETE' },
+    ),
+
+  /**
+   * Build the `/api/v1/oauth/start?...` URL. The caller does
+   * `window.location.assign(oauthApi.startUrl({...}))` to kick off the
+   * hosted OAuth dance — we don't fetch this ourselves because the
+   * server response is a 302 to the provider, not JSON the SPA wants
+   * to parse.
+   *
+   * Returns a same-origin URL so Next.js rewrites can proxy to the API.
+   */
+  startUrl: (opts: OAuthStartOptions): string => {
+    const params = new URLSearchParams();
+    params.set('connector_type', opts.connectorType);
+    if (opts.connectorId) params.set('connector_id', opts.connectorId);
+    if (opts.returnTo) params.set('return_to', opts.returnTo);
+    if (opts.name) params.set('name', opts.name);
+    if (opts.extras && Object.keys(opts.extras).length > 0) {
+      params.set('extras', JSON.stringify(opts.extras));
+    }
+    return `${API_BASE}/api/v1/oauth/start?${params.toString()}`;
+  },
+
+  /**
+   * JSON variant of `startUrl()`: instead of redirecting, the API
+   * returns `{ authorize_url, state }` so a popup-based UX can drive
+   * the consent screen itself.
+   */
+  startJson: (opts: OAuthStartOptions) => {
+    const params: Record<string, string> = {
+      connector_type: opts.connectorType,
+      response_mode: 'json',
+    };
+    if (opts.connectorId) params.connector_id = opts.connectorId;
+    if (opts.returnTo) params.return_to = opts.returnTo;
+    if (opts.name) params.name = opts.name;
+    if (opts.extras && Object.keys(opts.extras).length > 0) {
+      params.extras = JSON.stringify(opts.extras);
+    }
+    return request<OAuthStartResponse>('/api/v1/oauth/start', { params });
   },
 };
 
@@ -2479,6 +2830,8 @@ export default {
   cases: casesApi,
   metrics: metricsApi,
   connectors: connectorsApi,
+  inbox: inboxApi,
+  oauth: oauthApi,
   threatIntel: threatIntelApi,
   agents: agentsApi,
   hunt: huntApi,

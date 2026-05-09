@@ -117,7 +117,12 @@ async def get_connector_schema(connector_id: str):
     cls = CONNECTOR_REGISTRY.get(connector_id)
     if cls is None:
         raise HTTPException(status_code=404, detail=f"Connector '{connector_id}' not found")
-    return cls.schema().to_dict()
+    schema_dict = cls.schema().to_dict()
+    # Backfill capabilities from the classmethod when ``schema()`` didn't
+    # set them explicitly. See ``list_connector_schemas`` for rationale.
+    if not schema_dict.get("capabilities"):
+        schema_dict["capabilities"] = [c.value for c in cls.capabilities()]
+    return schema_dict
 
 
 @router.post("/connectors/{connector_id}/test")

@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -46,6 +46,12 @@ class AWSSecurityHubConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Security Hub aggregates findings from GuardDuty/Inspector/Macie/3p partners,
+        # which we surface to the agent layer as alerts.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, region: str = "us-east-1", access_key: str = "", secret_key: str = ""):
         self._region = region

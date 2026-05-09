@@ -232,6 +232,11 @@ const navSections: NavSection[] = [
     title: 'Platform',
     items: [
       {
+        label: 'Get started',
+        href: '/onboarding',
+        icon: <SparklesIcon />,
+      },
+      {
         label: 'Connectors',
         href: '/connectors',
         icon: <PuzzleIcon />,

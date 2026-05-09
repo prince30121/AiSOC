@@ -20,10 +20,155 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Iterable, Literal
 
 if TYPE_CHECKING:
     from app.federated.query import UnifiedQuery
+
+
+# ---------------------------------------------------------------------------
+# Capability taxonomy (Workstream 4)
+#
+# Capabilities describe *what an agent can ask a connector to do*, not how the
+# connector is configured. They are intentionally coarse-grained so the agent
+# can plan ("I want to isolate a host" → look for any connector exposing
+# ``ISOLATE_HOST``) without tripping over vendor-specific verbs.
+#
+# Buckets — keep in sync with the plan doc (READ / QUERY / PIVOT / ENRICH /
+# CONTAIN / REMEDIATE / TICKET / AUDIT). Adding a new capability:
+#   1. Add the enum member here.
+#   2. Update the relevant connectors' ``capabilities()`` classmethod.
+#   3. Update ``test_capabilities`` in ``services/connectors/tests/test_capabilities.py``.
+#
+# Per-instance downscoping happens in the API layer: an operator can store an
+# ``allowed_capabilities`` whitelist on a ``Connector`` row and the agent
+# router will intersect it with the connector class's declared capabilities.
+# ---------------------------------------------------------------------------
+
+
+class Capability(str, Enum):
+    """Action verbs an agent can ask a connector to perform.
+
+    String-valued enum so JSON serialisation is human-readable on the wire
+    (``"isolate_host"`` not ``"Capability.ISOLATE_HOST"``).
+
+    Naming matches the plan's taxonomy exactly. The ``PULL_*`` prefix on
+    READ verbs is deliberate — these are *passive* polling reads, distinct
+    from ``QUERY_*`` (active ad-hoc search) and ``ENRICH_*`` (single-entity
+    lookup). Keeping the verbs distinct lets the agent reason about cost
+    and latency: ``PULL_ALERTS`` is "what landed in the lake already";
+    ``QUERY_LOGS`` is "go ask the source right now"; ``ENRICH_USER`` is
+    "single round-trip for one entity".
+    """
+
+    # READ — passive pulls of events / records the source already produced.
+    PULL_ALERTS = "pull_alerts"
+    PULL_LOGS = "pull_logs"
+    PULL_AUDIT = "pull_audit"
+    PULL_PCAP = "pull_pcap"
+    PULL_FILE = "pull_file"
+
+    # QUERY — ad-hoc search across the source's index.
+    QUERY_LOGS = "query_logs"
+    QUERY_PROCESSES = "query_processes"
+
+    # PIVOT — "given this entity, return everything you know about it".
+    PIVOT_USER = "pivot_user"
+    PIVOT_HOST = "pivot_host"
+    PIVOT_IP = "pivot_ip"
+    PIVOT_HASH = "pivot_hash"
+    PIVOT_DOMAIN = "pivot_domain"
+
+    # ENRICH — return contextual reputation / metadata for a single entity.
+    ENRICH_USER = "enrich_user"
+    ENRICH_HOST = "enrich_host"
+    ENRICH_IOC = "enrich_ioc"
+    ENRICH_DOMAIN = "enrich_domain"
+    ENRICH_VULN = "enrich_vuln"
+    ENRICH_ASSET = "enrich_asset"
+
+    # CONTAIN / REMEDIATE — kinetic actions.
+    ISOLATE_HOST = "isolate_host"
+    UNISOLATE_HOST = "unisolate_host"
+    KILL_PROCESS = "kill_process"
+    QUARANTINE_FILE = "quarantine_file"
+    BLOCK_HASH = "block_hash"
+    BLOCK_DOMAIN = "block_domain"
+    BLOCK_USER_SIGNIN = "block_user_signin"
+    DISABLE_USER = "disable_user"
+    REVOKE_SESSION = "revoke_session"
+    RESET_PASSWORD = "reset_password"
+    REVOKE_TOKEN = "revoke_token"
+
+    # TICKET — bidirectional ITSM (Jira / ServiceNow / etc.).
+    PUSH_CASE = "push_case"
+    PUSH_STATUS = "push_status"
+
+    # AUDIT — read-only configuration / posture queries.
+    READ_AUDIT_TRAIL = "read_audit_trail"
+
+
+# Ordered groupings used by the UI to render checkbox groups. The agent
+# tools endpoint (``GET /api/v1/agents/tools``) returns the same grouping
+# so the frontend doesn't have to re-derive it.
+CAPABILITY_GROUPS: tuple[tuple[str, tuple[Capability, ...]], ...] = (
+    (
+        "read",
+        (
+            Capability.PULL_ALERTS,
+            Capability.PULL_LOGS,
+            Capability.PULL_AUDIT,
+            Capability.PULL_PCAP,
+            Capability.PULL_FILE,
+        ),
+    ),
+    ("query", (Capability.QUERY_LOGS, Capability.QUERY_PROCESSES)),
+    (
+        "pivot",
+        (
+            Capability.PIVOT_USER,
+            Capability.PIVOT_HOST,
+            Capability.PIVOT_IP,
+            Capability.PIVOT_HASH,
+            Capability.PIVOT_DOMAIN,
+        ),
+    ),
+    (
+        "enrich",
+        (
+            Capability.ENRICH_USER,
+            Capability.ENRICH_HOST,
+            Capability.ENRICH_IOC,
+            Capability.ENRICH_DOMAIN,
+            Capability.ENRICH_VULN,
+            Capability.ENRICH_ASSET,
+        ),
+    ),
+    (
+        "contain",
+        (
+            Capability.ISOLATE_HOST,
+            Capability.UNISOLATE_HOST,
+            Capability.KILL_PROCESS,
+            Capability.QUARANTINE_FILE,
+            Capability.BLOCK_HASH,
+            Capability.BLOCK_DOMAIN,
+        ),
+    ),
+    (
+        "remediate",
+        (
+            Capability.BLOCK_USER_SIGNIN,
+            Capability.DISABLE_USER,
+            Capability.REVOKE_SESSION,
+            Capability.RESET_PASSWORD,
+            Capability.REVOKE_TOKEN,
+        ),
+    ),
+    ("ticket", (Capability.PUSH_CASE, Capability.PUSH_STATUS)),
+    ("audit", (Capability.READ_AUDIT_TRAIL,)),
+)
 
 # ---------------------------------------------------------------------------
 # Schema dataclasses
@@ -94,6 +239,10 @@ class ConnectorSchema:
     fields: list[Field]
     docs_url: str | None = None
     oauth: OAuthHints | None = None
+    # Workstream 4: declared capability set. ``schema()`` populates this
+    # by calling ``cls.capabilities()`` so the wire format includes the
+    # exact verbs the agent layer is allowed to invoke.
+    capabilities: tuple[Capability, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -102,6 +251,11 @@ class ConnectorSchema:
             "category": self.category,
             "description": self.description,
             "fields": [f.to_dict() for f in self.fields],
+            # Always emit ``capabilities`` (even when empty) so the
+            # frontend can rely on the key existing. Empty list = "this
+            # connector is read-only by convention" which is a meaningful
+            # signal, not an oversight.
+            "capabilities": [c.value for c in self.capabilities],
         }
         if self.docs_url:
             out["docs_url"] = self.docs_url
@@ -130,6 +284,46 @@ class BaseConnector(ABC):
     connector_id: str = ""
     connector_name: str = ""
     connector_category: str = ""
+
+    # ---------------------------- capabilities -------------------------------
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        """Return the set of capabilities this connector class implements.
+
+        Default is empty — a connector with no declared capabilities is
+        read-only by convention (its only useful surface is the polling
+        scheduler ingesting its events). Subclasses override this to
+        opt into specific agent verbs::
+
+            @classmethod
+            def capabilities(cls) -> tuple[Capability, ...]:
+                return (
+                    Capability.PULL_ALERTS,
+                    Capability.PIVOT_HOST,
+                    Capability.ISOLATE_HOST,
+                )
+        """
+        return ()
+
+    @classmethod
+    def effective_capabilities(
+        cls, allowed: Iterable[str] | None = None
+    ) -> tuple[Capability, ...]:
+        """Intersect declared capabilities with a per-instance allowlist.
+
+        The API layer calls this with the ``allowed_capabilities`` column
+        from the ``connectors`` table. ``None`` means "no downscoping —
+        use everything the class declares". An empty list means "this
+        instance has been scoped to zero capabilities" (legitimately
+        useful: an operator can disable an instance from agent use
+        without disabling its polling).
+        """
+        declared = cls.capabilities()
+        if allowed is None:
+            return declared
+        allowed_set = {str(a) for a in allowed}
+        return tuple(c for c in declared if c.value in allowed_set)
 
     # ---------------------------- self-description ----------------------------
 

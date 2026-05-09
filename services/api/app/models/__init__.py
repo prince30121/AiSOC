@@ -8,6 +8,7 @@ from app.models.connector import Connector
 from app.models.detection_proposal import DetectionEvalBaseline, DetectionRuleProposal
 from app.models.detection_rule import DetectionRule
 from app.models.identity_graph import AlertIdentityLink, IdentityEdge, IdentityNode
+from app.models.inbox import TenantInboxToken
 from app.models.insider_threat import InsiderIndicator, InsiderPeerGroup, UserRiskProfile
 from app.models.institutional_memory import InstitutionalMemory
 from app.models.investigation import (
@@ -15,6 +16,7 @@ from app.models.investigation import (
     InvestigationEvent,
     InvestigationRun,
 )
+from app.models.oauth import OAuthAppCredential, OAuthState
 from app.models.mssp import (
     MSSPDelegation,
     MSSPRuleOverride,
@@ -69,6 +71,9 @@ __all__ = [
     "MSSPRulePackRule",
     "MSSPTenantMetrics",
     "MSSPTenantNote",
+    "OAuthAppCredential",
+    "OAuthState",
+    "TenantInboxToken",
     "PasskeyCredential",
     "PasskeyChallenge",
     "OnCallStatus",

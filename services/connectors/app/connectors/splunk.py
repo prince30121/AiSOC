@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 from app.federated.query import UnifiedQuery
 from app.federated.translators import to_spl
 
@@ -57,6 +57,12 @@ class SplunkConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Splunk surfaces notable events (alerts) and supports federated SPL
+        # search over indexes — the latter maps to QUERY_LOGS.
+        return (Capability.PULL_ALERTS, Capability.QUERY_LOGS)
 
     def __init__(
         self,

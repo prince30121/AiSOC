@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 from app.federated.query import UnifiedQuery
 from app.federated.translators import to_esql
 
@@ -70,6 +70,12 @@ class ElasticConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Elastic SIEM exposes detection alerts plus an ES|QL search surface
+        # we federate against — the latter maps cleanly to QUERY_LOGS.
+        return (Capability.PULL_ALERTS, Capability.QUERY_LOGS)
 
     def __init__(
         self,

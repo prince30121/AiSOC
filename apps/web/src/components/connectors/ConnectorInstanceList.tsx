@@ -75,6 +75,46 @@ function formatLastSync(ts?: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/**
+ * Render a duration in seconds as a short, human-readable label.
+ *
+ * Used by the freshness badge tooltip ("Last event 2m ago, expected
+ * every 5m"). Kept tiny on purpose — the badge text itself is sized to
+ * fit alongside the schema-drift pill, so anything longer than `12m`
+ * starts wrapping the row.
+ */
+function formatDurationSeconds(secs: number | null | undefined): string {
+  if (secs == null) return 'never';
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  return `${Math.floor(secs / 86400)}d`;
+}
+
+/**
+ * Tailwind classes for the three rendered freshness states.
+ *
+ * Centralised so the legend in docs/connectors/freshness-slos.md can
+ * mirror these exact swatches. ``unknown`` deliberately has no row —
+ * we don't render that variant so a freshly-saved connector with no
+ * events yet looks clean instead of being painted gray "stale."
+ */
+const FRESHNESS_BADGE_STYLES: Record<'green' | 'yellow' | 'red', string> = {
+  green: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30',
+  yellow: 'text-amber-300 bg-amber-500/10 border-amber-500/30',
+  red: 'text-red-300 bg-red-500/10 border-red-500/30',
+};
+
+const FRESHNESS_BADGE_LABELS: Record<'green' | 'yellow' | 'red', string> = {
+  green: 'Fresh',
+  yellow: 'Late',
+  red: 'Stalled',
+};
+
 function abbreviateType(type: string | undefined): string {
   if (!type) return '???';
   if (CONNECTOR_LABELS[type]) return CONNECTOR_LABELS[type];
@@ -126,6 +166,24 @@ function ConnectorCard({
         .join(' • ')
     : '';
 
+  // Freshness SLO badge: server computes the verdict from ``last_event_at``
+  // against a per-category cadence table (5m EDR, 15m SIEM, 30m SaaS, 1h
+  // vuln, etc.) so a Splunk that polls slowly doesn't drag CrowdStrike's
+  // status down. We only render green/yellow/red — ``unknown`` (newly
+  // configured, no events yet) is already conveyed by "Last sync: never"
+  // and adding a gray badge there would be visual noise.
+  const freshness = connector.freshness;
+  const showFreshnessBadge =
+    freshness && (freshness.status === 'green' || freshness.status === 'yellow' || freshness.status === 'red');
+  const freshnessTooltip = freshness
+    ? [
+        freshness.seconds_since_last_event != null
+          ? `Last event ${formatDurationSeconds(freshness.seconds_since_last_event)} ago`
+          : 'No events received yet',
+        `expected every ${formatDurationSeconds(freshness.expected_cadence_seconds)}`,
+      ].join(', ')
+    : '';
+
   return (
     <div className="bg-gray-900/60 border border-gray-800/60 rounded-xl p-5 hover:border-gray-700/60 transition-colors flex flex-col">
       <div className="flex items-start justify-between mb-3">
@@ -154,10 +212,36 @@ function ConnectorCard({
         <p className="text-xs text-gray-500 mb-4 line-clamp-2">{connector.description}</p>
       )}
 
-      {/* Schema-drift + filter-drop badges. Only render when there is
-          something to surface so a healthy connector keeps its clean look. */}
-      {(driftAt || eventsDropped > 0) && (
+      {/* Schema-drift, filter-drop, and freshness SLO badges. Only render
+          when there is something to surface so a healthy, fresh connector
+          keeps its clean look. */}
+      {(driftAt || eventsDropped > 0 || showFreshnessBadge) && (
         <div className="flex flex-wrap gap-1.5 mb-3">
+          {showFreshnessBadge && freshness && (
+            <span
+              title={freshnessTooltip}
+              className={clsx(
+                'text-[10px] px-2 py-0.5 rounded-full border inline-flex items-center gap-1',
+                FRESHNESS_BADGE_STYLES[
+                  freshness.status as 'green' | 'yellow' | 'red'
+                ],
+              )}
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              {
+                FRESHNESS_BADGE_LABELS[
+                  freshness.status as 'green' | 'yellow' | 'red'
+                ]
+              }
+            </span>
+          )}
           {driftAt && (
             <span
               title={driftTooltip}

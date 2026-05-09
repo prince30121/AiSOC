@@ -32,7 +32,7 @@ import structlog
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -95,6 +95,11 @@ class GoogleWorkspaceConnector(BaseConnector):
                 scopes=[_SCOPE],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Google Workspace Reports API — admin/login/drive/etc. audit activities.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, admin_email: str, service_account_json: str):
         self._admin_email = admin_email

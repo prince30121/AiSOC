@@ -26,6 +26,7 @@ const sidebars: SidebarsConfig = {
       label: "Connectors",
       items: [
         "connectors/index",
+        "connectors/universal-capture",
         "connectors/azure-entra",
         "connectors/azure-activity",
         "connectors/azure-defender",

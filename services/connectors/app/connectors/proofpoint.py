@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -46,6 +46,11 @@ class ProofpointConnector(BaseConnector):
                 Field("service_secret", "secret", "Service Secret"),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Proofpoint TAP — blocked messages surfaced as alerts to the agent layer.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, service_principal: str, service_secret: str):
         self._principal = service_principal

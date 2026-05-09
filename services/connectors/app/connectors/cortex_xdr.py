@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -41,7 +41,7 @@ class CortexXDRConnector(BaseConnector):
             description="Palo Alto Cortex XDR incidents via the public REST API.",
             docs_url="/docs/connectors/cortex-xdr",
             fields=[
-                Field("api_key_id", "string", "API Key ID"),
+                Field("api_key_id", "secret", "API Key ID"),
                 Field("api_key", "secret", "API Key"),
                 Field(
                     "fqdn",
@@ -52,6 +52,13 @@ class CortexXDRConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Today the runtime only implements ``fetch_alerts`` (incidents).
+        # ``ISOLATE_HOST`` / ``KILL_PROCESS`` belong here once we wire the
+        # Cortex XDR Endpoints API.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, api_key_id: str, api_key: str, fqdn: str):
         self._api_key_id = api_key_id

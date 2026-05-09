@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -88,6 +88,11 @@ class AzureActivityConnector(BaseConnector):
                 scopes=["https://management.azure.com/user_impersonation"],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Azure Activity Logs are control-plane audit events, not security alerts.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(
         self,

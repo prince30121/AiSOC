@@ -31,6 +31,17 @@ type Config struct {
 	VulnCorrelEnabled   bool
 	VulnKafkaTopic      string // topic for VULNERABILITY_MATCH events
 	NvdAPIKey           string // optional NVD API key for higher rate limits
+
+	// Workstream 6 — universal capture push paths.
+	// InboxEnabled toggles the /v1/inbox/* routes. Off by default in
+	// development if no DATABASE_DSN is set, since the inbox store needs
+	// Postgres to resolve tokens.
+	InboxEnabled       bool
+	InboxTemplatesDir  string // path to vendor template YAMLs
+	// InboxMaxBodyBytes caps a single inbox webhook body. Anything
+	// bigger gets a 413; vendors that page through alerts should batch
+	// at the source rather than push 50MB at once.
+	InboxMaxBodyBytes  int64
 }
 
 // Load reads configuration from environment variables
@@ -61,6 +72,11 @@ func Load() (*Config, error) {
 		VulnCorrelEnabled: getEnv("VULN_CORREL_ENABLED", "true") == "true",
 		VulnKafkaTopic:    getEnv("VULN_KAFKA_TOPIC", "aisoc.vulnerability_matches"),
 		NvdAPIKey:         getEnv("NVD_API_KEY", ""),
+
+		// Universal capture (Workstream 6).
+		InboxEnabled:      getEnv("INBOX_ENABLED", "true") == "true",
+		InboxTemplatesDir: getEnv("INBOX_TEMPLATES_DIR", "/app/templates"),
+		InboxMaxBodyBytes: int64(mustGetEnvInt("INBOX_MAX_BODY_BYTES", 10*1024*1024)),
 	}
 
 	if cfg.JWTSecret == "" && os.Getenv("ENV") != "development" {

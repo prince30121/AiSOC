@@ -50,6 +50,14 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "threat_intel:read",
         "settings:read",
         "settings:write",
+        # Workstream 7: tenant lake API. Tenant admins get full access
+        # to the warm-tier query surface (POST /api/v1/lake/sql) and
+        # the schema discovery endpoint (GET /api/v1/lake/schema). The
+        # rewriter still enforces tenant_id predicates and the
+        # ClickHouse client still enforces row caps and timeouts; the
+        # permission only controls who *can* query at all.
+        "lake:query",
+        "lake:read_schema",
     ],
     "soc_lead": [
         "alerts:read",
@@ -65,6 +73,9 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "reports:read",
         "reports:write",
         "threat_intel:read",
+        # SOC leads run investigations across the lake routinely.
+        "lake:query",
+        "lake:read_schema",
     ],
     "soc_analyst": [
         "alerts:read",
@@ -76,6 +87,11 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "connectors:read",
         "threat_intel:read",
         "reports:read",
+        # Analysts need lake access to drill into raw events when
+        # alerts don't tell the whole story. Schema is read-only and
+        # the rate limiter caps abuse.
+        "lake:query",
+        "lake:read_schema",
     ],
     "threat_hunter": [
         "alerts:read",
@@ -86,6 +102,11 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "rules:read",
         "rules:write",
         "reports:read",
+        # Threat hunters live in the lake — this is their primary
+        # workspace for hypothesis-driven investigation across raw
+        # events, alert metrics, and IOC enrichments.
+        "lake:query",
+        "lake:read_schema",
     ],
     "viewer": [
         "alerts:read",

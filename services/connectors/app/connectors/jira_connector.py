@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -48,7 +48,30 @@ class JiraConnector(BaseConnector):
                 Field("email", "string", "Email"),
                 Field("api_token", "secret", "API Token"),
             ],
+            # Hosted OAuth (Workstream 2): Atlassian 3LO. We map a Jira
+            # Cloud site to the {site_id} placeholder by hitting the
+            # accessible-resources endpoint after the token exchange.
+            # Atlassian mandates PKCE + the audience=api.atlassian.com
+            # parameter; the /oauth/start handler injects both.
+            oauth=OAuthHints(
+                supported_in_hosted=True,
+                authorize_url="https://auth.atlassian.com/authorize",
+                token_url="https://auth.atlassian.com/oauth/token",
+                scopes=[
+                    "read:jira-work",
+                    "read:jira-user",
+                    "write:jira-work",
+                    "manage:jira-webhook",
+                    "offline_access",
+                ],
+            ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Today the Jira connector only pulls security-tagged issues as alerts.
+        # Bidirectional ticketing (PUSH_CASE / PUSH_STATUS) lands in WS8.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, base_url: str, email: str, api_token: str):
         self._base_url = base_url.rstrip("/")

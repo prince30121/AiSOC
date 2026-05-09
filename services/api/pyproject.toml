@@ -29,6 +29,13 @@ opentelemetry-sdk = "^1.24.0"
 opentelemetry-instrumentation-fastapi = "^0.45b0"
 opentelemetry-instrumentation-sqlalchemy = "^0.45b0"
 clickhouse-driver = "^0.2.8"
+# sqlglot powers the tenant-lake SQL rewriter (Workstream 7). We use it to
+# parse user-supplied SELECTs, enforce a table allowlist, and inject the
+# mandatory `tenant_id = '<uuid>'` predicate into every relation (including
+# subqueries) before the statement is forwarded to ClickHouse. Pinned with
+# a wide range because sqlglot ships frequent dialect tweaks and we don't
+# want lockstep upgrades; the rewriter is exercised by unit tests.
+sqlglot = ">=23.0.0,<27.0.0"
 boto3 = "^1.34.0"
 neo4j = ">=5.19,<7.0"
 pysigma = "^0.11.0"

@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -38,7 +38,28 @@ class OktaConnector(BaseConnector):
                 ),
                 Field("api_token", "secret", "API Token"),
             ],
+            # Hosted OAuth (Workstream 2): Okta supports OIDC + OAuth 2.0
+            # for service apps. The {domain} placeholder is rewritten in
+            # /api/v1/oauth/start using the per-instance ``domain`` field
+            # (or the OAuth app credential's authorize_url override for
+            # custom auth servers).
+            oauth=OAuthHints(
+                supported_in_hosted=True,
+                authorize_url="{domain}/oauth2/v1/authorize",
+                token_url="{domain}/oauth2/v1/token",
+                scopes=[
+                    "okta.logs.read",
+                    "okta.users.read",
+                    "okta.groups.read",
+                    "offline_access",
+                ],
+            ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Okta System Log streams identity audit events (logins, MFA, admin actions).
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, domain: str, api_token: str):
         self._domain = domain.rstrip("/")

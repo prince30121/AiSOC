@@ -30,7 +30,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -84,6 +84,11 @@ class M365AuditConnector(BaseConnector):
                 scopes=["https://manage.office.com/ActivityFeed.Read"],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Microsoft 365 Unified Audit Log — control-plane / mailbox audit events.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str):
         self._tenant_id = tenant_id

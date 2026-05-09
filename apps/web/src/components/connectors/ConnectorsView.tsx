@@ -28,6 +28,7 @@ import {
 import { ErrorState } from '@/components/ui/ErrorState';
 import { AddConnectorModal } from './AddConnectorModal';
 import { ConnectorInstanceList } from './ConnectorInstanceList';
+import { InboxTokensPanel } from './InboxTokensPanel';
 
 const DEMO_CONNECTORS: Connector[] = [
   {
@@ -281,6 +282,11 @@ export function ConnectorsView() {
           onDelete={handleDelete}
         />
       )}
+
+      {/* Universal capture (push) — collapsed by default. Sits below the
+          poll-based connector list so the catalog stays the primary path
+          and "push for everything else" is one click away. */}
+      <InboxTokensPanel />
 
       {/* Add modal */}
       <AddConnectorModal

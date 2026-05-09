@@ -1,5 +1,6 @@
 """AiSOC Core API - FastAPI Application Entry Point."""
 
+import asyncio
 import hmac
 import time
 from collections.abc import AsyncGenerator
@@ -19,6 +20,7 @@ from app.core.airgap import airgap_status
 from app.core.config import settings, warn_if_insecure_defaults
 from app.core.logging import configure_logging
 from app.core.telemetry import instrument_app
+from app.db.clickhouse import close_clickhouse
 from app.db.database import engine
 from app.db.neo4j import close_neo4j, init_neo4j
 from app.graphql.schema import graphql_router
@@ -26,6 +28,7 @@ from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.demo_mode import DemoModeMiddleware
 from app.models import Base
 from app.services.plugin_manager import get_plugin_manager
+from app.workers.oauth_refresh import run_forever as run_oauth_refresh
 
 _DEV_ENVIRONMENTS = {"development", "dev", "local", "demo", "test"}
 _metrics_bearer = HTTPBearer(auto_error=False)
@@ -96,11 +99,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("plugin discovery failed – continuing without plugins", error=str(exc))
 
+    # Workstream 5 (self-healing): kick off the OAuth refresh worker. It runs
+    # as a background asyncio task that owns its own DB session per tick. We
+    # gate on settings so tests / scheduler-replicas can opt out.
+    oauth_refresh_task: asyncio.Task | None = None
+    if settings.OAUTH_REFRESH_WORKER_ENABLED:
+        try:
+            oauth_refresh_task = asyncio.create_task(
+                run_oauth_refresh(), name="oauth_refresh_worker"
+            )
+            logger.info("oauth_refresh worker started")
+        except Exception as exc:
+            logger.warning("oauth_refresh worker failed to start", error=str(exc))
+
     yield
 
     logger.info("AiSOC API shutting down")
+    if oauth_refresh_task is not None and not oauth_refresh_task.done():
+        oauth_refresh_task.cancel()
+        try:
+            await oauth_refresh_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("oauth_refresh worker shutdown error", error=str(exc))
     await engine.dispose()
     await close_neo4j()
+    # Close the ClickHouse warm-tier client. We don't pre-init it on
+    # startup — the singleton is created lazily on the first lake query
+    # so deployments without a ClickHouse host don't pay the cost — but
+    # we do need to release the socket cleanly on shutdown.
+    await close_clickhouse()
 
 
 def create_application() -> FastAPI:

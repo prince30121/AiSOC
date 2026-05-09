@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -45,6 +45,11 @@ class DuoSecurityConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Duo authentication logs are an audit feed (who logged in from where).
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, integration_key: str, secret_key: str, api_hostname: str):
         self._ikey = integration_key

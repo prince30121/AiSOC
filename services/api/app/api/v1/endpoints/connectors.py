@@ -73,6 +73,7 @@ from app.api.v1.deps import AuthUser, DBSession, require_permission
 from app.core.config import settings
 from app.models.connector import Connector
 from app.security.credential_vault import CredentialVaultError, get_vault
+from app.services.connector_freshness import compute_freshness
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,22 @@ router = APIRouter(prefix="/connectors", tags=["connectors"])
 
 
 # --------------------------------------------------------------- Pydantic schemas
+
+
+class FreshnessSLOResponse(BaseModel):
+    """Freshness verdict surfaced on every ``ConnectorResponse``.
+
+    Driven by ``app.services.connector_freshness.compute_freshness``.
+    The UI uses ``status`` to color the badge and ``seconds_since_last_event``
+    + ``expected_cadence_seconds`` to render the tooltip ("expected within
+    5 min, last event 12 min ago"). ``category`` is echoed back for
+    client-side grouping without re-deriving it.
+    """
+
+    status: str  # unknown | green | yellow | red
+    expected_cadence_seconds: int
+    seconds_since_last_event: int | None
+    category: str
 
 
 class ConnectorResponse(BaseModel):
@@ -116,11 +133,98 @@ class ConnectorResponse(BaseModel):
     schema_fingerprint: str | None = None
     last_schema_drift_at: datetime | None = None
     last_drift_details: dict[str, Any] | None = None
+    # Workstream 1: timestamp of last *actual* event ingested. Distinct
+    # from `last_sync` because empty polls advance `last_sync` but not
+    # this. `last_event_kind` lets the UI label the preview row.
+    last_event_at: datetime | None = None
+    last_event_kind: str | None = None
+    # Workstream 2: True when this row was created via the hosted OAuth
+    # one-click flow rather than by pasting an API token. Drives the
+    # "Reconnect" action in the UI (re-runs OAuth instead of asking for
+    # the credential again).
+    oauth_provisioned: bool = False
+    # Workstream 4: per-instance capability downscoping. ``None`` means
+    # "use everything the class declares"; an explicit list narrows the
+    # agent's verbs for *this instance only*.
+    allowed_capabilities: list[str] | None = None
+    # Workstream 5: freshness SLO badge driven by per-class cadence
+    # (5 min EDR, 60 min vuln, etc). Computed on read against
+    # ``last_event_at``; never persisted, so the verdict is always
+    # current as of the request.
+    freshness: FreshnessSLOResponse | None = None
     tags: list
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+def _build_connector_response(connector: Connector) -> ConnectorResponse:
+    """Hydrate a ``ConnectorResponse`` and attach the live freshness SLO.
+
+    Centralised so list/get/create/update/PUT-capabilities all return the
+    same shape. Pure projection — no DB round-trips, ``compute_freshness``
+    runs against the row's own ``last_event_at`` and ``category`` columns.
+    Honors a per-instance cadence override at
+    ``connector_config.expected_cadence_seconds`` so an operator can
+    declare "this Splunk instance polls hourly, don't paint yellow"
+    without changing the global table.
+    """
+    response = ConnectorResponse.model_validate(connector)
+    override = None
+    cfg = connector.connector_config or {}
+    raw_override = cfg.get("expected_cadence_seconds") if isinstance(cfg, dict) else None
+    if isinstance(raw_override, int | float):
+        override = int(raw_override)
+    verdict = compute_freshness(
+        category=connector.category,
+        last_event_at=connector.last_event_at,
+        override_seconds=override,
+    )
+    response.freshness = FreshnessSLOResponse(**verdict.to_dict())
+    return response
+
+
+class LastEventResponse(BaseModel):
+    """Lightweight payload for the verify-data-flowing screen.
+
+    The onboarding flow polls this every few seconds while waiting for
+    the first event to land. Keeping the shape minimal avoids paying
+    the full ``ConnectorResponse`` cost on every poll tick.
+    """
+
+    connector_id: uuid.UUID
+    last_event_at: datetime | None
+    last_event_kind: str | None
+    events_ingested: int
+    last_sync: datetime | None
+    health_status: str
+    # Convenience: a server-side computed answer to "has data started
+    # flowing yet?" so the client doesn't have to know the rule.
+    data_flowing: bool
+
+
+class TroubleshootRequest(BaseModel):
+    """AI-troubleshooter input from the wizard's failure UX."""
+
+    connector_type: str = Field(min_length=1, max_length=100)
+    error: str = Field(min_length=1, max_length=4000)
+    auth_config_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of fields the operator filled in. Values are intentionally "
+            "*not* sent — the troubleshooter doesn't need plaintext credentials "
+            "to diagnose '401 Unauthorized'."
+        ),
+    )
+
+
+class TroubleshootResponse(BaseModel):
+    """Structured guidance the wizard renders next to a failed test."""
+
+    likely_cause: str
+    fix_steps: list[str]
+    doc_link: str | None = None
 
 
 class ConnectorHealthSummary(BaseModel):
@@ -176,6 +280,26 @@ class TestConnectionRequest(BaseModel):
     connector_type: str = Field(min_length=1, max_length=100)
     auth_config: dict[str, Any] = Field(default_factory=dict)
     connector_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateCapabilitiesRequest(BaseModel):
+    """Per-instance capability downscoping payload (Workstream 4).
+
+    ``None`` removes the downscope ("agent may use every capability the
+    connector class declares"). An explicit list — possibly empty —
+    becomes the canonical allow-list. Validation against the connector
+    class's declared capabilities happens server-side so a tampered
+    request can't widen the agent's reach beyond what the connector
+    code actually implements.
+    """
+
+    allowed_capabilities: list[str] | None = Field(
+        default=None,
+        description=(
+            "Capability strings (e.g. ['pull_alerts','query_logs']) the agent "
+            "is permitted to invoke against this instance. None = no downscope."
+        ),
+    )
 
 
 # ------------------------------------------------------------- internal helpers
@@ -477,7 +601,7 @@ async def list_connectors(
     """List all connector instances for the caller's tenant."""
     result = await db.execute(select(Connector).where(Connector.tenant_id == current_user.tenant_id).order_by(Connector.created_at))
     connectors = result.scalars().all()
-    return [ConnectorResponse.model_validate(c) for c in connectors]
+    return [_build_connector_response(c) for c in connectors]
 
 
 @router.post("", response_model=ConnectorResponse, status_code=status.HTTP_201_CREATED)
@@ -517,7 +641,7 @@ async def create_connector(
     db.add(connector)
     await db.commit()
     await db.refresh(connector)
-    return ConnectorResponse.model_validate(connector)
+    return _build_connector_response(connector)
 
 
 @router.get("/{connector_id}", response_model=ConnectorResponse)
@@ -536,7 +660,7 @@ async def get_connector(
     connector = result.scalar_one_or_none()
     if connector is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connector not found")
-    return ConnectorResponse.model_validate(connector)
+    return _build_connector_response(connector)
 
 
 @router.patch("/{connector_id}", response_model=ConnectorResponse)
@@ -587,7 +711,90 @@ async def update_connector(
         await db.commit()
         await db.refresh(connector)
 
-    return ConnectorResponse.model_validate(connector)
+    return _build_connector_response(connector)
+
+
+@router.put("/{connector_id}/capabilities", response_model=ConnectorResponse)
+async def update_connector_capabilities(
+    connector_id: uuid.UUID,
+    request: UpdateCapabilitiesRequest,
+    current_user: Annotated[AuthUser, Depends(require_permission("connectors:write"))],
+    db: DBSession,
+) -> ConnectorResponse:
+    """Downscope which capabilities the agent may invoke against this instance.
+
+    The contract:
+
+    * ``allowed_capabilities = None`` clears the downscope. The agent reverts
+      to the connector class's full ``capabilities()`` declaration.
+    * ``allowed_capabilities = []`` is a *legitimate* operator action: it
+      pins the agent to zero capabilities for this instance. Polling and
+      data ingestion are unaffected — only agent-initiated actions are
+      gated by this column.
+    * Any string in the list MUST appear in the connector class's declared
+      capabilities. We validate against the live catalog so a tampered
+      request can't widen the agent's reach beyond what the connector code
+      actually implements.
+
+    The narrowing happens at the read path
+    (``BaseConnector.effective_capabilities()``), not here, so the column
+    is purely a per-instance allow-list — flipping it back to ``None``
+    instantly restores the class default with no migration.
+    """
+    result = await db.execute(
+        select(Connector).where(
+            Connector.id == connector_id,
+            Connector.tenant_id == current_user.tenant_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if connector is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Connector not found",
+        )
+
+    if request.allowed_capabilities is not None:
+        # Validate every requested capability against the connector class's
+        # declared set. We pull from the live catalog (rather than a hard-coded
+        # enum on the API side) so newly-added capabilities are usable as soon
+        # as the connectors microservice rolls them out, with no API redeploy.
+        catalog_entry = await _validate_connector_type(connector.connector_type)
+        declared_caps_raw = catalog_entry.get("capabilities") or []
+        declared_caps = {str(c) for c in declared_caps_raw}
+        requested_caps = {str(c) for c in request.allowed_capabilities}
+        unknown = sorted(requested_caps - declared_caps)
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Capabilities not declared by connector "
+                    f"'{_safe_log_val(connector.connector_type)}': "
+                    f"{', '.join(unknown)}. "
+                    f"Declared: {', '.join(sorted(declared_caps)) or '(none)'}"
+                ),
+            )
+
+    await db.execute(
+        update(Connector)
+        .where(Connector.id == connector_id)
+        .values(
+            allowed_capabilities=request.allowed_capabilities,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+    await db.refresh(connector)
+
+    logger.info(
+        "connector.capabilities.updated tenant_id=%s connector_id=%s connector_type=%s allowed=%s",
+        current_user.tenant_id,
+        connector_id,
+        _safe_log_val(connector.connector_type),
+        request.allowed_capabilities,
+    )
+
+    return _build_connector_response(connector)
 
 
 @router.delete("/{connector_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -669,3 +876,301 @@ async def test_existing_connector(
     )
     await db.commit()
     return verdict
+
+
+# ----------------------------------------------------------- verify-data-flowing
+
+
+# Anything fresher than this counts as "data flowing" for the onboarding
+# verify screen. Plenty wide to allow for batch poll cadences (the
+# connectors service polls every 5 min by default) without flapping
+# the green check.
+_DATA_FLOWING_WINDOW_SECONDS = 30 * 60
+
+
+@router.get("/{connector_id}/last_event_at", response_model=LastEventResponse)
+async def get_last_event_at(
+    connector_id: uuid.UUID,
+    current_user: Annotated[AuthUser, Depends(require_permission("connectors:read"))],
+    db: DBSession,
+) -> LastEventResponse:
+    """Return event-arrival watermark for the onboarding verify screen.
+
+    Polled by the wizard's "verify data flowing" panel every few seconds
+    after a connector is saved. Returns 200 with ``data_flowing=false``
+    rather than a 404 so the polling loop has stable shape until the
+    first event lands. The ``data_flowing`` boolean is computed server
+    side from a fixed window (see ``_DATA_FLOWING_WINDOW_SECONDS``) so
+    every client agrees on the rule.
+    """
+    result = await db.execute(
+        select(Connector).where(
+            Connector.id == connector_id,
+            Connector.tenant_id == current_user.tenant_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if connector is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connector not found")
+
+    last_event_at = connector.last_event_at
+    data_flowing = False
+    if last_event_at is not None:
+        # `last_event_at` is timezone-aware (DateTime(timezone=True)),
+        # but be defensive against drivers that strip tzinfo.
+        ts = last_event_at if last_event_at.tzinfo else last_event_at.replace(tzinfo=UTC)
+        data_flowing = (datetime.now(UTC) - ts).total_seconds() <= _DATA_FLOWING_WINDOW_SECONDS
+
+    return LastEventResponse(
+        connector_id=connector.id,
+        last_event_at=last_event_at,
+        last_event_kind=connector.last_event_kind,
+        events_ingested=int(connector.events_ingested or 0),
+        last_sync=connector.last_sync,
+        health_status=connector.health_status or "unknown",
+        data_flowing=data_flowing,
+    )
+
+
+# ----------------------------------------------------------- AI troubleshooter
+
+
+# Hand-rolled rules for the most common credential-test failures. We
+# keep this deterministic for two reasons:
+#
+# * The plan calls for an LLM-backed sidekick, but in single-tenant /
+#   air-gapped deployments there's no LLM endpoint to hit. A static
+#   rule table covers the 80% case (auth headers, scope, network)
+#   without requiring any external dependency.
+# * Even when an LLM is wired in, the wizard has to render *something*
+#   if the model is slow/unavailable. These rules are the fallback.
+#
+# Order matters — first regex match wins. Patterns are case-insensitive.
+_TROUBLESHOOT_RULES: list[tuple[re.Pattern[str], str, list[str], str | None]] = [
+    (
+        re.compile(r"401|unauthor", re.IGNORECASE),
+        "The credentials were rejected by the upstream API.",
+        [
+            "Verify the API key, client ID, or service-account password is correct.",
+            "Check whether the credential has expired or was revoked in the source system.",
+            "If you're using an OAuth client secret, regenerate it and retry.",
+            "Confirm the account hasn't been disabled by an admin.",
+        ],
+        "/docs/connectors/auth-troubleshooting",
+    ),
+    (
+        re.compile(r"403|forbidden|insufficient.*scope|missing.*permission", re.IGNORECASE),
+        "Authentication succeeded but the credential is missing required scopes / permissions.",
+        [
+            "Open the upstream system and check the required role/scope listed in the connector docs.",
+            "If using an OAuth scope list, re-authorize and tick all required scopes.",
+            "For service accounts, grant the minimum read/audit role described in the connector reference.",
+        ],
+        "/docs/connectors/scopes",
+    ),
+    (
+        re.compile(r"429|rate.?limit|too many requests", re.IGNORECASE),
+        "The upstream API is rate-limiting the test request.",
+        [
+            "Wait 1-2 minutes and re-test — first-call rate limits are usually narrow.",
+            "If you're using a shared API key, check whether another integration is hammering it.",
+            "Configure a longer poll interval in the connector advanced settings if this persists.",
+        ],
+        None,
+    ),
+    (
+        re.compile(r"timeout|timed out|context deadline", re.IGNORECASE),
+        "The connector couldn't reach the upstream API in time.",
+        [
+            "Check that the API endpoint URL is correct and matches your tenant region.",
+            "If the upstream is internal, confirm AiSOC has network connectivity / VPN routing.",
+            "Try lowering the test payload size in connector_config (when applicable).",
+        ],
+        None,
+    ),
+    (
+        re.compile(r"dns|name resolution|no such host|getaddrinfo", re.IGNORECASE),
+        "DNS resolution for the configured endpoint failed.",
+        [
+            "Double-check the hostname for typos.",
+            "If this is a private endpoint, confirm a private resolver / DNS forwarder is configured.",
+        ],
+        None,
+    ),
+    (
+        re.compile(r"x509|certificate|tls|ssl", re.IGNORECASE),
+        "TLS/certificate validation failed against the upstream endpoint.",
+        [
+            "Confirm the endpoint URL uses the correct hostname (cert SANs must match).",
+            "If you're behind a proxy with custom CA, install the CA bundle on the connectors service.",
+            "For self-signed certs, switch to a properly issued cert before going to production.",
+        ],
+        None,
+    ),
+    (
+        re.compile(r"missing|required|invalid.*config|schema", re.IGNORECASE),
+        "One or more required configuration fields are missing or invalid.",
+        [
+            "Re-check the wizard's required fields (marked with *).",
+            "If you pasted a key, ensure no surrounding whitespace or quote characters were captured.",
+            "Some fields require a specific format (e.g. region 'us-east-1' not 'US East'); see the connector docs.",
+        ],
+        None,
+    ),
+    (
+        re.compile(r"5\d{2}|server error|bad gateway", re.IGNORECASE),
+        "The upstream API returned a server-side error during the test.",
+        [
+            "Wait a minute and retry — most 5xx are transient.",
+            "Check the upstream service's status page.",
+            "If this persists, file a support ticket with the upstream vendor and include the error string.",
+        ],
+        None,
+    ),
+]
+
+# Per-connector documentation links so the troubleshooter can offer a
+# canonical "read the setup guide" link as a last resort.
+_CONNECTOR_DOC_LINKS: dict[str, str] = {
+    "okta": "/docs/connectors/okta",
+    "azure_entra": "/docs/connectors/azure-entra",
+    "google_workspace": "/docs/connectors/google-workspace",
+    "github_audit": "/docs/connectors/github-audit",
+    "atlassian_audit": "/docs/connectors/atlassian-audit",
+    "slack_audit": "/docs/connectors/slack-audit",
+    "microsoft_365": "/docs/connectors/microsoft-365",
+    "crowdstrike": "/docs/connectors/crowdstrike",
+    "sentinelone": "/docs/connectors/sentinelone",
+    "carbon_black": "/docs/connectors/carbon-black",
+    "trellix": "/docs/connectors/trellix",
+    "trend_vision_one": "/docs/connectors/trend-vision-one",
+    "cortex_xsiam": "/docs/connectors/cortex-xsiam",
+    "rapid7_insightidr": "/docs/connectors/rapid7-insightidr",
+    "sumo_logic": "/docs/connectors/sumo-logic",
+    "chronicle": "/docs/connectors/chronicle",
+    "datadog_cloud_siem": "/docs/connectors/datadog-cloud-siem",
+    "lacework": "/docs/connectors/lacework",
+    "tenable": "/docs/connectors/tenable",
+    "mimecast": "/docs/connectors/mimecast",
+    "salesforce": "/docs/connectors/salesforce",
+    "auth0": "/docs/connectors/auth0",
+    "cisco_umbrella": "/docs/connectors/cisco-umbrella",
+}
+
+
+def _troubleshoot(error: str, connector_type: str) -> TroubleshootResponse:
+    """Map an error string + connector to a structured fix suggestion.
+
+    Pure function (no I/O) so it's trivially unit-testable. Behaviour
+    is intentionally deterministic; this is a *fallback* for when the
+    LLM-backed troubleshooter is offline or not configured.
+    """
+    for pattern, cause, steps, doc in _TROUBLESHOOT_RULES:
+        if pattern.search(error):
+            return TroubleshootResponse(
+                likely_cause=cause,
+                fix_steps=list(steps),
+                doc_link=doc or _CONNECTOR_DOC_LINKS.get(connector_type),
+            )
+    return TroubleshootResponse(
+        likely_cause=(
+            "We couldn't classify this error automatically. The most common "
+            "causes are mistyped credentials, missing scopes, or a regional "
+            "endpoint mismatch."
+        ),
+        fix_steps=[
+            "Re-read the error string carefully — many vendor APIs include the actual problem in the body.",
+            "Check the connector setup guide for the exact required permissions.",
+            "Re-test with a fresh API key / re-authorized OAuth grant.",
+        ],
+        doc_link=_CONNECTOR_DOC_LINKS.get(connector_type),
+    )
+
+
+@router.post("/troubleshoot", response_model=TroubleshootResponse)
+async def troubleshoot_connection(
+    request: TroubleshootRequest,
+    current_user: Annotated[AuthUser, Depends(require_permission("connectors:write"))],
+) -> TroubleshootResponse:
+    """Return structured fix suggestions for a failed connector test.
+
+    The wizard calls this when ``test_connection`` returns ``success=false``.
+    Auth-config keys (not values) are forwarded so future LLM-backed
+    versions can hint about which field to revisit, while keeping the
+    request safe to log.
+    """
+    if not _CONNECTOR_TYPE_RE.match(request.connector_type):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="connector_type contains invalid characters",
+        )
+    safe_type = _safe_connector_type(request.connector_type)
+    logger.info(
+        "connectors.troubleshoot type=%s keys=%s err_len=%d",
+        _safe_log_val(safe_type),
+        sorted(request.auth_config_keys)[:8],  # cap to avoid log spam
+        len(request.error),
+    )
+    return _troubleshoot(request.error, safe_type)
+
+
+# ----------------------------------------------------------------- push tokens
+
+
+def _generate_ingest_token() -> str:
+    """Generate an opaque, URL-safe token for the /v1/inbox/{token} push path.
+
+    32 bytes of entropy = ~256 bits, which gives us collision resistance
+    well past anything we'd ever see at tenant scale.
+    """
+    import secrets
+
+    return f"ait_{secrets.token_urlsafe(32)}"
+
+
+class IngestTokenResponse(BaseModel):
+    """Push-token response. ``inbox_url`` is the absolute endpoint."""
+
+    connector_id: uuid.UUID
+    ingest_token: str
+    inbox_url: str
+
+
+@router.post("/{connector_id}/push/refresh", response_model=IngestTokenResponse)
+async def refresh_ingest_token(
+    connector_id: uuid.UUID,
+    current_user: Annotated[AuthUser, Depends(require_permission("connectors:write"))],
+    db: DBSession,
+) -> IngestTokenResponse:
+    """Generate (or rotate) the per-connector push-ingest token.
+
+    Operators click "Reveal push URL" in the wizard, which calls this and
+    renders the resulting curl example. Re-calling rotates the token and
+    invalidates the old one — the typical use case is "I think this URL
+    leaked into a Slack message, give me a new one".
+    """
+    result = await db.execute(
+        select(Connector).where(
+            Connector.id == connector_id,
+            Connector.tenant_id == current_user.tenant_id,
+        )
+    )
+    connector = result.scalar_one_or_none()
+    if connector is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connector not found")
+
+    new_token = _generate_ingest_token()
+    await db.execute(
+        update(Connector)
+        .where(Connector.id == connector_id)
+        .values(ingest_token=new_token, updated_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+    base = (getattr(settings, "INGEST_PUBLIC_URL", "") or "").rstrip("/")
+    inbox_url = f"{base}/v1/inbox/{new_token}" if base else f"/v1/inbox/{new_token}"
+    return IngestTokenResponse(
+        connector_id=connector_id,
+        ingest_token=new_token,
+        inbox_url=inbox_url,
+    )

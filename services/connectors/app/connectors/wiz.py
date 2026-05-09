@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -84,6 +84,11 @@ class WizConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Wiz issues are surfaced to the agent layer as alerts (CSPM findings).
+        return (Capability.PULL_ALERTS,)
 
     def __init__(
         self,

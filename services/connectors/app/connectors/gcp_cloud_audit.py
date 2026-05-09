@@ -35,7 +35,7 @@ import structlog
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -95,6 +95,11 @@ class GCPCloudAuditConnector(BaseConnector):
                 scopes=[_SCOPE],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Cloud Audit Logs are GCP's control-plane audit trail.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, project_id: str, service_account_json: str):
         self._project_id = project_id

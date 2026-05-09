@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -20,6 +20,14 @@ class CrowdStrikeConnector(BaseConnector):
     connector_id = "crowdstrike"
     connector_name = "CrowdStrike Falcon"
     connector_category = "edr"
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Honest declaration: today the runtime only implements ``fetch_alerts``.
+        # ``ISOLATE_HOST`` / ``KILL_PROCESS`` belong here once we wire the
+        # corresponding Falcon Real-Time-Response endpoints — declaring them
+        # before the methods exist would be a lie to the agent layer.
+        return (Capability.PULL_ALERTS,)
 
     @classmethod
     def schema(cls) -> ConnectorSchema:

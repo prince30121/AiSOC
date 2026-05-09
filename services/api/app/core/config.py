@@ -90,6 +90,48 @@ class Settings(BaseSettings):
     CONNECTORS_SERVICE_URL: str = "http://connectors:8003"
     CONNECTORS_SERVICE_TIMEOUT_SECONDS: float = 15.0
 
+    # Public ingest base URL — surfaced in the wizard's "Reveal push URL"
+    # response so operators get a copy-pasteable curl example. Empty
+    # falls back to a relative path; production deployments should
+    # always set this (e.g. https://ingest.tryaisoc.com).
+    INGEST_PUBLIC_URL: str = ""
+
+    # Public base URL for the API service, used to build the OAuth
+    # ``redirect_uri`` advertised to upstream identity providers. Must be
+    # registered verbatim in each tenant's OAuth app. In production this
+    # is e.g. ``https://api.tryaisoc.com``; the callback path
+    # ``/api/v1/oauth/callback`` is appended automatically. Empty
+    # disables the hosted OAuth flow (start endpoint returns 503).
+    OAUTH_PUBLIC_BASE_URL: str = ""
+
+    # Public base URL of the analyst console — used as the default
+    # ``return_to`` after a successful OAuth callback so the operator
+    # lands back on /onboarding with the verify-data-flowing screen
+    # already polling. Empty falls back to a relative path.
+    CONSOLE_PUBLIC_BASE_URL: str = ""
+
+    # Workstream 5 (self-healing) — auto OAuth refresh worker. The
+    # background loop runs inside the API process (``lifespan`` hook in
+    # main.py) and rotates expiring access_tokens for every connector
+    # provisioned via the hosted OAuth flow. Set
+    # ``OAUTH_REFRESH_WORKER_ENABLED=false`` to disable (e.g. in tests
+    # or when running the API behind a separate scheduler service).
+    #
+    # ``INTERVAL`` is the polling cadence in seconds. ``LEAD_TIME`` is
+    # how many seconds before ``expires_at`` we proactively refresh —
+    # 300s gives roughly a 5-minute margin so a slow provider response
+    # doesn't push us past expiry. ``ALARM_THRESHOLD`` is the consecutive
+    # failure count that flips ``health_status`` to ``unhealthy`` (the
+    # plan calls for 3).
+    OAUTH_REFRESH_WORKER_ENABLED: bool = True
+    OAUTH_REFRESH_INTERVAL_SECONDS: int = 60
+    OAUTH_REFRESH_LEAD_TIME_SECONDS: int = 300
+    OAUTH_REFRESH_ALARM_THRESHOLD: int = 3
+    # Per-provider HTTP timeout (seconds) for the token-exchange POST.
+    # Kept short because the worker runs in-band with the API event
+    # loop; a hung provider should not stall the cadence.
+    OAUTH_REFRESH_HTTP_TIMEOUT_SECONDS: float = 15.0
+
     # Database
     DATABASE_URL: PostgresDsn = "postgresql+asyncpg://aisoc:aisoc@localhost:5432/aisoc"
     DATABASE_POOL_SIZE: int = 20

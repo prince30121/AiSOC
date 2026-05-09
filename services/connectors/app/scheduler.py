@@ -62,6 +62,7 @@ from app.connectors import CONNECTOR_REGISTRY
 from app.db.connector_repo import (
     ConnectorInstance,
     fetch_enabled_connectors,
+    record_backfill_run,
     record_poll_failure,
     record_poll_success,
     record_schema_drift,
@@ -91,6 +92,31 @@ _DEFAULT_POLL_INTERVAL_S = 300
 # either the source API (too short) or render polling pointless (too long).
 _MIN_POLL_INTERVAL_S = 30
 _MAX_POLL_INTERVAL_S = 86400  # 24 hours
+
+# Workstream 5: backfill-on-outage tunables.
+#
+# When a connector recovers from an outage that lasted at least
+# ``_BACKFILL_OUTAGE_THRESHOLD_S`` we kick off a one-shot poll with an
+# extended lookback window so the customer doesn't have a hole in their
+# data for the duration of the outage. The threshold matches the v2 plan
+# spec ("backfill-on-outage worker fires when a connector is unhealthy
+# for >30 min and then recovers").
+#
+# We also enforce a flap-suppression window: if a backfill ran within the
+# last ``_BACKFILL_FLAP_WINDOW_S`` we won't fire another one even if
+# ``last_outage_at`` looks long. This prevents re-firing on a recovery
+# that briefly toggled back to unhealthy and then to healthy again.
+#
+# ``_MAX_BACKFILL_LOOKBACK_S`` caps the lookback we ask the source for
+# regardless of outage length, to prevent a 3-day outage from triggering
+# a 3-day query that the source rate-limits or rejects.
+_BACKFILL_OUTAGE_THRESHOLD_S = 30 * 60  # 30 minutes
+_BACKFILL_FLAP_WINDOW_S = 10 * 60       # 10 minutes
+_MAX_BACKFILL_LOOKBACK_S = 24 * 60 * 60  # 24 hours
+# Small buffer added to the computed backfill window to cover the gap
+# between the last successful poll and ``last_outage_at`` (which is set
+# at *first failed* poll, not at the last successful one).
+_BACKFILL_LOOKBACK_BUFFER_S = 5 * 60
 
 
 def _coerce_poll_interval(connector_config: dict[str, Any]) -> int:
@@ -287,12 +313,23 @@ class ConnectorScheduler:
 
     # ------------------------------------------------------------------ polling
 
-    async def _poll_one(self, *, connector_id: uuid.UUID) -> None:
+    async def _poll_one(
+        self,
+        *,
+        connector_id: uuid.UUID,
+        backfill_seconds: int | None = None,
+    ) -> None:
         """Single-connector poll cycle.
 
         Always wraps the entire body in try/except so a misbehaving
         connector class can't take down the scheduler. Records success or
         failure on the row, then returns.
+
+        When ``backfill_seconds`` is provided this is a one-shot recovery
+        poll triggered by the backfill-on-outage worker. We use that value
+        as the lookback instead of the connector's normal poll cadence and
+        we skip the recovery-detection branch at the end (we don't want
+        the backfill itself to schedule another backfill).
         """
         if self._engine is None or self._ingest_client is None or self._vault is None:
             logger.warning(
@@ -374,7 +411,22 @@ class ConnectorScheduler:
         # We deliberately default to the same poll interval, so a 5-min
         # poll fetches the last 5 min of events. This keeps the source
         # query window aligned with the scheduler cadence.
-        since_seconds = _coerce_poll_interval(target.connector_config)
+        #
+        # Workstream 5: when this is a backfill-on-outage poll, the worker
+        # passes an explicit ``backfill_seconds`` window covering the outage
+        # duration (capped at _MAX_BACKFILL_LOOKBACK_S). The cap matters
+        # because some sources rate-limit or outright reject very large
+        # query windows.
+        if backfill_seconds is not None:
+            since_seconds = max(1, min(int(backfill_seconds), _MAX_BACKFILL_LOOKBACK_S))
+            logger.info(
+                "connector.scheduler.backfill_poll id=%s type=%s since_seconds=%d",
+                connector_id,
+                target.connector_type,
+                since_seconds,
+            )
+        else:
+            since_seconds = _coerce_poll_interval(target.connector_config)
         try:
             raw_events = await connector.fetch_alerts(since_seconds=since_seconds)
         except Exception:
@@ -486,14 +538,62 @@ class ConnectorScheduler:
                 details=drift_details,
             )
 
+        # Workstream 5: derive ``last_event_at`` from the kept batch so the
+        # freshness-SLO badge in the UI reflects the freshest event we
+        # actually shipped to the lake (not the poll wall-clock, which can
+        # be misleading for low-volume connectors). We look at the standard
+        # ECS-ish ``@timestamp`` first and fall back to ``timestamp``; if
+        # neither is present or parseable we leave ``last_event_at`` as
+        # None and ``record_poll_success`` won't touch the column.
+        last_event_at = _extract_last_event_at(kept) if accepted > 0 else None
+        last_event_kind = target.connector_type if accepted > 0 else None
+
+        # Workstream 5: detect recovery-from-outage *before* writing
+        # success. ``record_poll_success`` clears ``last_outage_at``, so we
+        # must read it from the in-memory ``target`` snapshot. We also
+        # never schedule a backfill for a backfill poll itself (avoid
+        # cascading) or for connectors that just flapped (last_backfill_at
+        # within the flap window).
+        should_backfill = False
+        backfill_window_seconds = 0
+        if backfill_seconds is None and target.last_outage_at is not None:
+            outage_duration = (datetime.now(UTC) - target.last_outage_at).total_seconds()
+            if outage_duration >= _BACKFILL_OUTAGE_THRESHOLD_S:
+                # Suppress flapping: don't re-fire a backfill if we already
+                # ran one within _BACKFILL_FLAP_WINDOW_S.
+                flap_ok = True
+                if target.last_backfill_at is not None:
+                    since_last = (datetime.now(UTC) - target.last_backfill_at).total_seconds()
+                    if since_last < _BACKFILL_FLAP_WINDOW_S:
+                        flap_ok = False
+                        logger.info(
+                            "connector.scheduler.backfill_suppressed id=%s reason=flap since_last=%ds",
+                            connector_id,
+                            int(since_last),
+                        )
+                if flap_ok:
+                    should_backfill = True
+                    backfill_window_seconds = min(
+                        int(outage_duration) + _BACKFILL_LOOKBACK_BUFFER_S,
+                        _MAX_BACKFILL_LOOKBACK_S,
+                    )
+                    logger.info(
+                        "connector.scheduler.backfill_scheduled id=%s outage_duration_s=%d window_s=%d",
+                        connector_id,
+                        int(outage_duration),
+                        backfill_window_seconds,
+                    )
+
         await self._record_success(
             target.id,
             events_added=accepted,
             events_dropped=dropped_count,
             schema_fingerprint=new_fingerprint,
+            last_event_at=last_event_at,
+            last_event_kind=last_event_kind,
         )
         logger.info(
-            "connector.scheduler.poll_complete id=%s type=%s accepted=%d rejected=%d dropped=%d drift=%s elapsed_ms=%d",
+            "connector.scheduler.poll_complete id=%s type=%s accepted=%d rejected=%d dropped=%d drift=%s elapsed_ms=%d backfill=%s",
             connector_id,
             target.connector_type,
             accepted,
@@ -501,7 +601,25 @@ class ConnectorScheduler:
             dropped_count,
             "yes" if drift_detected else "no",
             elapsed_ms,
+            "scheduled" if should_backfill else ("running" if backfill_seconds is not None else "no"),
         )
+
+        # Fire the backfill *after* the success write so the UI shows
+        # "healthy" before the backfill traffic kicks in. We mark the
+        # backfill timestamp before invoking _poll_one to suppress any
+        # racing recovery detection from a parallel job.
+        if should_backfill:
+            await self._record_backfill_run(target.id)
+            try:
+                await self._poll_one(
+                    connector_id=connector_id,
+                    backfill_seconds=backfill_window_seconds,
+                )
+            except Exception:  # pragma: no cover - defensive only
+                logger.exception(
+                    "connector.scheduler.backfill_run_failed id=%s",
+                    connector_id,
+                )
 
     # ------------------------------------------------------------------ db helpers
 
@@ -512,6 +630,8 @@ class ConnectorScheduler:
         events_added: int,
         events_dropped: int = 0,
         schema_fingerprint: str | None = None,
+        last_event_at: datetime | None = None,
+        last_event_kind: str | None = None,
     ) -> None:
         if self._engine is None:  # pragma: no cover
             return
@@ -523,10 +643,31 @@ class ConnectorScheduler:
                     events_added=events_added,
                     events_dropped=events_dropped,
                     schema_fingerprint=schema_fingerprint,
+                    last_event_at=last_event_at,
+                    last_event_kind=last_event_kind,
                 )
         except Exception:  # pragma: no cover
             logger.exception(
                 "connector.scheduler.record_success_failed id=%s",
+                connector_id,
+            )
+
+    async def _record_backfill_run(self, connector_id: uuid.UUID) -> None:
+        """Stamp ``last_backfill_at`` to suppress flap-driven re-fires.
+
+        Workstream 5: invoked by ``_poll_one`` immediately before kicking
+        off the one-shot backfill poll. Even if the backfill itself fails,
+        the timestamp prevents a re-fire while the connector is bouncing
+        between healthy/unhealthy.
+        """
+        if self._engine is None:  # pragma: no cover
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await record_backfill_run(conn, connector_id)
+        except Exception:  # pragma: no cover
+            logger.exception(
+                "connector.scheduler.record_backfill_failed id=%s",
                 connector_id,
             )
 
@@ -585,6 +726,46 @@ def _safe_normalize(connector: Any, event: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(out, dict):
         return event
     return out
+
+
+def _extract_last_event_at(events: list[dict[str, Any]]) -> datetime | None:
+    """Return the freshest event timestamp from a normalized batch.
+
+    Workstream 5: powers the freshness-SLO badge in the UI. We prefer
+    the ECS-ish ``@timestamp`` field, fall back to ``timestamp``, and
+    accept either ISO-8601 strings (with ``Z`` or offset) or epoch
+    seconds. A batch with no parseable timestamps yields ``None`` so
+    ``record_poll_success`` won't overwrite a previously-good value.
+    """
+    if not events:
+        return None
+    best: datetime | None = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        raw = event.get("@timestamp") or event.get("timestamp")
+        parsed: datetime | None = None
+        if isinstance(raw, datetime):
+            parsed = raw
+        elif isinstance(raw, str):
+            try:
+                # ``fromisoformat`` rejects trailing ``Z`` until 3.11+;
+                # normalize to ``+00:00`` so we work on 3.10+.
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                parsed = None
+        elif isinstance(raw, (int, float)):
+            try:
+                parsed = datetime.fromtimestamp(float(raw), tz=UTC)
+            except (OverflowError, OSError, ValueError):
+                parsed = None
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if best is None or parsed > best:
+            best = parsed
+    return best
 
 
 # ---------------------------------------------------------------------------

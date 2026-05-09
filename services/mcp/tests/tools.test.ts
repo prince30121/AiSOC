@@ -28,6 +28,11 @@ const EXPECTED_TOOLS = [
   "aisoc_get_investigation",
   "aisoc_replay_decision",
   "aisoc_explain_step",
+  // Workstream 7 — tenant lake. ``schema`` is a discovery tool (lives in
+  // the discovery cluster of the listing); ``query`` is the heaviest tool
+  // we ship and lives in the action cluster.
+  "aisoc_lake_schema",
+  "aisoc_lake_query",
 ] as const;
 
 describe("tool registry", () => {
@@ -102,6 +107,10 @@ describe("tool registry", () => {
     expect(indexOf("aisoc_list_investigations")).toBeLessThan(
       indexOf("aisoc_get_investigation"),
     );
+    // Lake: schema is the typed-introspection cousin and must appear
+    // before the heavy SELECT tool, so an agent skimming the listing
+    // learns "ask for the schema first" before it sees the SQL hammer.
+    expect(indexOf("aisoc_lake_schema")).toBeLessThan(indexOf("aisoc_lake_query"));
   });
 
   it("places action/replay tools last", () => {

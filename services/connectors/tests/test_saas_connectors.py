@@ -603,11 +603,11 @@ def test_github_schema_has_required_fields():
     assert token_field.type == "secret"
 
 
-def test_github_schema_oauth_hosted_is_false():
-    # We accept tokens directly. The hosted device-flow OAuth is a follow-up.
+def test_github_schema_oauth_hosted_supported():
+    # GitHub OAuth web flow is now wired into the click-and-connect surface.
     schema = GitHubConnector.schema()
     assert schema.oauth is not None
-    assert schema.oauth.supported_in_hosted is False
+    assert schema.oauth.supported_in_hosted is True
     assert "read:audit_log" in (schema.oauth.scopes or [])
 
 

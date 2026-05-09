@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -41,6 +41,11 @@ class OnePasswordConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # 1Password Events API streams sign-ins / item usage / audit events.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(
         self,

@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    agents,
     airgap,
     alerts,
     api_keys,
@@ -26,9 +27,12 @@ from app.api.v1.endpoints import (
     fusion,
     hunts,
     identity_timeline,
+    inbox,
     knowledge_base,
+    lake,
     nl_detection,
     nl_query,
+    oauth,
     graph,
     identity_graph,
     insider_threat,
@@ -61,6 +65,11 @@ api_router.include_router(api_keys.router)
 api_router.include_router(alerts.router)
 api_router.include_router(cases.router)
 api_router.include_router(connectors.router)
+# Hosted OAuth one-click for connectors (Workstream 2 of AI Stack plan).
+# /oauth/start mints a state nonce + 302 to the provider; /oauth/callback
+# swaps the code, encrypts tokens via the credential vault, and lands the
+# operator back on /onboarding.
+api_router.include_router(oauth.router)
 api_router.include_router(tenants.router)
 api_router.include_router(detection_rules.router)
 # Frontend-shape facade: /api/v1/detection/rules + /api/v1/detection/test
@@ -143,3 +152,25 @@ api_router.include_router(deployment.router)
 # Fusion gateway: proxies to services/fusion when FUSION_URL is set, otherwise
 # returns graceful empty payloads so the analyst console renders cleanly.
 api_router.include_router(fusion.router)
+
+# Agent-facing tool surface (Workstream 4 of AI Stack plan).
+# /agents/tools returns the tenant-scoped, downscope-filtered list of
+# (connector instance × capability) pairs the agent layer is allowed to
+# invoke. Read-only — actual invocation lives in the agents service.
+api_router.include_router(agents.router)
+
+# Universal capture push paths (Workstream 6 of AI Stack plan).
+# /inbox/templates + /inbox/tokens manage the per-tenant rotatable inbox
+# URLs the wizard's "Push (any vendor)" card hands out. Vendor traffic
+# itself terminates at services/ingest, which resolves the token to a
+# tenant + template_id and reuses the existing OCSF normalizer.
+api_router.include_router(inbox.router)
+
+# Tenant lake API (Workstream 7 of AI Stack plan).
+# /lake/sql executes a tenant-scoped SELECT against the warm tier
+# (ClickHouse) after passing through the SQL rewriter, which enforces a
+# table allowlist, injects tenant_id predicates, clamps LIMIT, and
+# rejects DML/DDL/table-valued functions. /lake/schema returns the
+# allowlisted table catalog so operators (and LLM agents) can author
+# queries without column-name guesswork.
+api_router.include_router(lake.router)

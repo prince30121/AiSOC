@@ -16,6 +16,7 @@ We do *not* test APScheduler itself — that has its own tests.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -163,6 +164,8 @@ async def test_poll_one_filter_rules_drop_events(monkeypatch):
         events_added: int,
         events_dropped: int = 0,
         schema_fingerprint: str | None = None,
+        last_event_at: Any = None,
+        last_event_kind: str | None = None,
     ) -> None:
         conn.engine.success_calls.append(connector_id)
         captured_success["events_added"] = events_added
@@ -327,6 +330,8 @@ async def test_poll_one_quiet_hour_does_not_clobber_fingerprint(monkeypatch):
         events_added: int,
         events_dropped: int = 0,
         schema_fingerprint: str | None = None,
+        last_event_at: Any = None,
+        last_event_kind: str | None = None,
     ) -> None:
         conn.engine.success_calls.append(connector_id)
         captured_success["schema_fingerprint"] = schema_fingerprint
@@ -516,6 +521,270 @@ async def test_reload_reschedules_when_interval_changes(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Workstream 5: backfill-on-outage worker
+# ---------------------------------------------------------------------------
+#
+# These tests pin down the behavior described in the v2 plan:
+#
+# * After an outage of >= ``_BACKFILL_OUTAGE_THRESHOLD_S`` (30 min) the
+#   recovery poll schedules a one-shot backfill poll using a lookback that
+#   covers the outage duration plus a small buffer, capped at
+#   ``_MAX_BACKFILL_LOOKBACK_S`` (24h).
+# * Outages shorter than the threshold do NOT trigger a backfill.
+# * If a backfill ran inside ``_BACKFILL_FLAP_WINDOW_S`` (10 min) we
+#   suppress re-firing — flap protection.
+# * Backfill polls themselves never recurse into another backfill (we
+#   pass ``backfill_seconds`` so the scheduler treats this as a one-shot).
+# * The flap-suppress timestamp is written *before* the backfill poll
+#   runs so a parallel scheduler job can't double-fire.
+
+
+@pytest.mark.asyncio
+async def test_poll_one_recovery_after_long_outage_schedules_backfill(monkeypatch):
+    """Recovery from a 45-minute outage should fire one backfill poll
+    using a lookback window that covers the outage + small buffer."""
+    from app import scheduler as scheduler_mod
+
+    inst = _make_instance(connector_type="fake_connector")
+    inst.last_outage_at = datetime.now(UTC) - timedelta(minutes=45)
+    inst.last_backfill_at = None
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    # First call: normal recovery poll using poll_interval (300 default).
+    # Second call: one-shot backfill with the outage-derived lookback.
+    assert fake_connector.fetch_alerts.await_count == 2
+    first_call = fake_connector.fetch_alerts.await_args_list[0]
+    second_call = fake_connector.fetch_alerts.await_args_list[1]
+
+    assert first_call.kwargs["since_seconds"] == 300  # default poll cadence
+    backfill_seconds = second_call.kwargs["since_seconds"]
+
+    # Window should be ~45 min + 5 min buffer = ~3000s, but the backfill
+    # caller passes ``int(outage_duration) + buffer``. Allow ±10s for
+    # clock drift between the test setup and the now() inside the
+    # scheduler.
+    expected = int(45 * 60) + scheduler_mod._BACKFILL_LOOKBACK_BUFFER_S
+    assert abs(backfill_seconds - expected) <= 10
+    # Cap should never be exceeded.
+    assert backfill_seconds <= scheduler_mod._MAX_BACKFILL_LOOKBACK_S
+
+    # Backfill timestamp was stamped before the second poll fired.
+    assert getattr(fake_engine, "backfill_calls", []) == [inst.id]
+
+
+@pytest.mark.asyncio
+async def test_poll_one_short_outage_skips_backfill(monkeypatch):
+    """Outages shorter than the 30-minute threshold should never schedule
+    a backfill — the recovery poll covers them."""
+    inst = _make_instance(connector_type="fake_connector")
+    # 5 minutes of outage — well below the 30-min threshold.
+    inst.last_outage_at = datetime.now(UTC) - timedelta(minutes=5)
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    # Exactly one fetch (the recovery poll). No backfill fan-out.
+    assert fake_connector.fetch_alerts.await_count == 1
+    assert getattr(fake_engine, "backfill_calls", []) == []
+
+
+@pytest.mark.asyncio
+async def test_poll_one_recent_backfill_suppresses_flap(monkeypatch):
+    """If we already ran a backfill inside the flap window, do NOT
+    re-fire even if last_outage_at looks long enough."""
+    inst = _make_instance(connector_type="fake_connector")
+    inst.last_outage_at = datetime.now(UTC) - timedelta(minutes=60)
+    # Recent backfill — inside the 10-minute flap window.
+    inst.last_backfill_at = datetime.now(UTC) - timedelta(minutes=2)
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    # No second fetch and no new backfill stamp.
+    assert fake_connector.fetch_alerts.await_count == 1
+    assert getattr(fake_engine, "backfill_calls", []) == []
+
+
+@pytest.mark.asyncio
+async def test_poll_one_old_backfill_outside_flap_window_allows_refire(monkeypatch):
+    """If the previous backfill ran outside the flap window, a fresh
+    long-outage recovery should still schedule a new backfill."""
+    inst = _make_instance(connector_type="fake_connector")
+    inst.last_outage_at = datetime.now(UTC) - timedelta(minutes=60)
+    # Last backfill 30 minutes ago — outside the 10-minute flap window.
+    inst.last_backfill_at = datetime.now(UTC) - timedelta(minutes=30)
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    # Recovery poll + one-shot backfill = 2 fetches.
+    assert fake_connector.fetch_alerts.await_count == 2
+    assert getattr(fake_engine, "backfill_calls", []) == [inst.id]
+
+
+@pytest.mark.asyncio
+async def test_poll_one_backfill_does_not_recurse(monkeypatch):
+    """A backfill poll itself must not schedule yet another backfill —
+    we pass ``backfill_seconds`` so recovery detection is skipped."""
+    inst = _make_instance(connector_type="fake_connector")
+    # Even if last_outage_at is set, an explicit backfill_seconds should
+    # cause the recovery branch to be skipped.
+    inst.last_outage_at = datetime.now(UTC) - timedelta(hours=2)
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id, backfill_seconds=3600)
+
+    # Exactly one fetch (the backfill itself). No second one for cascade.
+    assert fake_connector.fetch_alerts.await_count == 1
+    assert fake_connector.fetch_alerts.await_args.kwargs["since_seconds"] == 3600
+    assert getattr(fake_engine, "backfill_calls", []) == []
+
+
+@pytest.mark.asyncio
+async def test_poll_one_backfill_window_capped_at_max(monkeypatch):
+    """A 36-hour outage should still produce a backfill window capped at
+    24 hours (``_MAX_BACKFILL_LOOKBACK_S``)."""
+    from app import scheduler as scheduler_mod
+
+    inst = _make_instance(connector_type="fake_connector")
+    inst.last_outage_at = datetime.now(UTC) - timedelta(hours=36)
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    # Two fetches: recovery + one-shot backfill.
+    assert fake_connector.fetch_alerts.await_count == 2
+    backfill_seconds = fake_connector.fetch_alerts.await_args_list[1].kwargs[
+        "since_seconds"
+    ]
+    # The cap kicks in BEFORE the buffer is added inside _poll_one
+    # (see ``backfill_window_seconds = min(...)``), so the value passed
+    # to the recursive call equals the cap exactly.
+    assert backfill_seconds == scheduler_mod._MAX_BACKFILL_LOOKBACK_S
+
+
+@pytest.mark.asyncio
+async def test_poll_one_no_outage_no_backfill(monkeypatch):
+    """When the connector was never in outage (last_outage_at is None),
+    no backfill should ever fire even if a poll succeeds."""
+    inst = _make_instance(connector_type="fake_connector")
+    assert inst.last_outage_at is None
+
+    fake_connector = MagicMock()
+    fake_connector.fetch_alerts = AsyncMock(return_value=[{"x": 1}])
+    fake_connector.normalize = MagicMock(side_effect=lambda e: e)
+
+    monkeypatch.setattr(
+        "app.scheduler.CONNECTOR_REGISTRY",
+        {"fake_connector": MagicMock(return_value=fake_connector)},
+    )
+
+    fake_engine = _FakeEngine([inst])
+    scheduler = ConnectorScheduler(
+        engine=fake_engine,
+        ingest_client=_FakeIngestClient(accepted=1),
+        vault=_FakeVault(),
+    )
+
+    await scheduler._poll_one(connector_id=inst.id)
+
+    assert fake_connector.fetch_alerts.await_count == 1
+    assert getattr(fake_engine, "backfill_calls", []) == []
+
+
+# ---------------------------------------------------------------------------
 # Test fakes
 # ---------------------------------------------------------------------------
 
@@ -573,6 +842,9 @@ class _FakeEngine:
         self.success_calls: list[uuid.UUID] = []
         self.failure_calls: list[uuid.UUID] = []
         self.drift_calls: list[dict[str, Any]] = []
+        # Workstream 5: track every record_backfill_run() call so backfill
+        # tests can assert when the flap-suppress timestamp was stamped.
+        self.backfill_calls: list[uuid.UUID] = []
 
     def begin(self) -> _FakeAsyncContextManager:
         return _FakeAsyncContextManager(_FakeConnection(self))
@@ -631,6 +903,8 @@ def _patch_repo_calls(monkeypatch):
         events_added: int,
         events_dropped: int = 0,
         schema_fingerprint: str | None = None,
+        last_event_at: Any = None,
+        last_event_kind: str | None = None,
     ) -> None:
         conn.engine.success_calls.append(connector_id)
 
@@ -648,7 +922,14 @@ def _patch_repo_calls(monkeypatch):
             {"connector_id": connector_id, "fingerprint": fingerprint, "details": details}
         )
 
+    async def fake_record_backfill_run(
+        conn: Any,
+        connector_id: uuid.UUID,
+    ) -> None:
+        getattr(conn.engine, "backfill_calls", []).append(connector_id)
+
     monkeypatch.setattr("app.scheduler.fetch_enabled_connectors", fake_fetch_enabled_connectors)
     monkeypatch.setattr("app.scheduler.record_poll_success", fake_record_poll_success)
     monkeypatch.setattr("app.scheduler.record_poll_failure", fake_record_poll_failure)
     monkeypatch.setattr("app.scheduler.record_schema_drift", fake_record_schema_drift)
+    monkeypatch.setattr("app.scheduler.record_backfill_run", fake_record_backfill_run)

@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -71,6 +71,11 @@ class AzureEntraConnector(BaseConnector):
                 ],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Entra ID surfaces both directory audits and risky sign-ins.
+        return (Capability.PULL_AUDIT, Capability.PULL_ALERTS)
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str):
         self._tenant_id = tenant_id

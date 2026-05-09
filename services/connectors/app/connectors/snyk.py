@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -55,6 +55,11 @@ class SnykConnector(BaseConnector):
                 ),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Snyk surfaces vulnerability issues across SCM/SCA/IaC scans as alerts.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(
         self,

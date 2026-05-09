@@ -30,7 +30,7 @@ import structlog
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -90,6 +90,11 @@ class GCPSCCConnector(BaseConnector):
                 scopes=[_SCOPE],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Security Command Center surfaces cross-product GCP findings.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, organization_id: str, service_account_json: str):
         self._organization_id = organization_id

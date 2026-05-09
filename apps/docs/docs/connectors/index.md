@@ -14,6 +14,8 @@ Everything ships with three guarantees:
 - **Schemas are self-describing.** The connector tells the UI what fields it needs; the wizard renders them. There is no hardcoded form that drifts from the backend.
 - **Polling is observable.** Every poll records `last_poll_at`, `events_added`, and `health_status`. Failures show up in the connector card with the underlying error message.
 
+If your tool isn't in the catalog, see [Universal capture](/docs/connectors/universal-capture) — webhook URLs, email relay, CEF syslog, and Splunk HEC let any vendor that can POST or send mail land events in the same OCSF stream.
+
 ## Catalog
 
 The catalog ships with **26 connectors** out of the box.

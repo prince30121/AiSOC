@@ -9,6 +9,7 @@ import (
 
 	"github.com/beenuar/aisoc/services/ingest/internal/config"
 	"github.com/beenuar/aisoc/services/ingest/internal/handler"
+	"github.com/beenuar/aisoc/services/ingest/internal/inbox"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -21,8 +22,14 @@ type Server struct {
 	httpServer *http.Server
 }
 
-// New creates a new server with routing configured
-func New(cfg *config.Config, h *handler.Handler) *Server {
+// New creates a new server with routing configured.
+//
+// inboxHandler is optional — if Postgres isn't reachable at startup we
+// still want /v1/ingest to keep working, so server.New tolerates a nil
+// inbox handler and just doesn't mount the universal-capture routes.
+// In production both handlers are wired; in dev without DATABASE_DSN
+// only the connector path is up.
+func New(cfg *config.Config, h *handler.Handler, inboxHandler *inbox.Handler) *Server {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -33,7 +40,7 @@ func New(cfg *config.Config, h *handler.Handler) *Server {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Tenant-ID"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Tenant-ID", "X-Inbox-Token", "X-Splunk-Token", "X-Signature", "X-Hub-Signature-256"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
@@ -45,6 +52,22 @@ func New(cfg *config.Config, h *handler.Handler) *Server {
 	r.Route("/v1", func(r chi.Router) {
 		r.Post("/ingest", h.IngestEvents)
 		r.Post("/ingest/batch", h.IngestEvents)
+
+		// Workstream 6 — universal capture push paths.
+		// /v1/inbox/{token}        → generic JSON or NDJSON webhook
+		// /v1/inbox/email/{token}  → email-relay JSON envelope
+		// /v1/inbox/cef            → CEF syslog over HTTP (token in header)
+		// /v1/inbox/hec            → Splunk HEC-compatible (token in header)
+		if inboxHandler != nil {
+			r.Route("/inbox", func(r chi.Router) {
+				r.Post("/cef", inboxHandler.ServeCEF)
+				r.Post("/hec", inboxHandler.ServeHEC)
+				r.Post("/email/{token}", inboxHandler.ServeEmail)
+				r.Post("/{token}", inboxHandler.ServeJSON)
+			})
+		} else {
+			log.Warn().Msg("inbox routes disabled (no Postgres pool wired)")
+		}
 	})
 
 	return &Server{

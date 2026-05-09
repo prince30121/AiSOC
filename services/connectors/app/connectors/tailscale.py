@@ -36,7 +36,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -161,6 +161,11 @@ class TailscaleConnector(BaseConnector):
                 scopes=["audit:read"],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Tailscale audit log streams admin / ACL / device-mgmt audit events.
+        return (Capability.PULL_AUDIT,)
 
     def __init__(
         self,

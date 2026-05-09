@@ -24,6 +24,7 @@ import {
   listInvestigationsTool,
   replayDecisionTool,
 } from "./investigations.js";
+import { lakeQueryTool, lakeSchemaTool } from "./lake.js";
 import type { ToolDefinition } from "./types.js";
 
 export const ALL_TOOLS: ToolDefinition[] = [
@@ -32,11 +33,18 @@ export const ALL_TOOLS: ToolDefinition[] = [
   listCasesTool,
   queryDetectionsTool,
   listInvestigationsTool,
+  lakeSchemaTool,
   // Deep-dive
   getAlertTool,
   getCaseTool,
   getDetectionRuleTool,
   getInvestigationTool,
+  // Lake query (warm tier — gated by lake:query permission server-side).
+  // Listed near the bottom because it's the most expensive surface and
+  // the schema tool above is the recommended discovery path; agents that
+  // read the listing top-to-bottom should reach for SELECT only after
+  // they've seen the structured tools.
+  lakeQueryTool,
   // Action / replay
   runInvestigationTool,
   replayDecisionTool,

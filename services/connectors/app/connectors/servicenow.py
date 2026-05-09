@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field
 
 logger = structlog.get_logger()
 
@@ -47,6 +47,12 @@ class ServiceNowConnector(BaseConnector):
                 Field("password", "secret", "Password"),
             ],
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Today the runtime only pulls incidents (alerts). Bidirectional ITSM
+        # — PUSH_CASE / PUSH_STATUS — lands in WS8 once we wire writebacks.
+        return (Capability.PULL_ALERTS,)
 
     def __init__(self, instance_url: str, username: str, password: str):
         self._base_url = instance_url.rstrip("/")

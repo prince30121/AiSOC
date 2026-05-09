@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.connectors.base import BaseConnector, ConnectorSchema, Field, OAuthHints
+from app.connectors.base import BaseConnector, Capability, ConnectorSchema, Field, OAuthHints
 
 logger = structlog.get_logger()
 
@@ -74,6 +74,11 @@ class CloudflareConnector(BaseConnector):
                 scopes=[],
             ),
         )
+
+    @classmethod
+    def capabilities(cls) -> tuple[Capability, ...]:
+        # Cloudflare account audit logs (admin / config changes).
+        return (Capability.PULL_AUDIT,)
 
     def __init__(self, account_id: str, api_token: str):
         self._account_id = account_id
