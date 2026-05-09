@@ -377,3 +377,71 @@ class BaseConnector(ABC):
         be indistinguishable from "no matches" and is a footgun).
         """
         raise NotImplementedError(f"connector '{self.connector_id}' does not support federated search")
+
+    # ----------------------------- bidirectional ITSM (Workstream 8) ----------
+    #
+    # ``push_case`` mints an external ticket from an AiSOC case. Implementations
+    # MUST return an ``ExternalTicketRef`` so the API layer can persist the
+    # mapping in ``case_external_refs`` and avoid double-creation on retry.
+    #
+    # ``push_status_change`` projects an AiSOC status transition onto the
+    # external system (e.g. AiSOC ``resolved`` → Jira "Done", ServiceNow
+    # ``state=6``).  Implementations are expected to be idempotent and tolerate
+    # the case where ``external_ref`` was created before the connector knew
+    # about the case (e.g. inbound webhook flow).
+    #
+    # Both methods are *gated* by ``Capability.PUSH_CASE`` /
+    # ``Capability.PUSH_STATUS`` from WS4. Connectors that don't declare those
+    # capabilities raise ``NotImplementedError`` from the defaults so the
+    # actions worker fails closed instead of silently skipping a case fan-out.
+
+    async def push_case(self, case: dict[str, Any]) -> dict[str, Any]:
+        """Create or update an external ticket from an AiSOC case.
+
+        Args:
+            case: A dict with at least ``id``, ``case_number``, ``title``,
+                ``description``, ``severity``, ``status``, plus optional
+                ``assignee``, ``tags``, ``mitre_techniques``, ``alert_ids``,
+                and any prior ``external_ref`` (if this is an update / retry
+                rather than a first-time push).
+
+        Returns:
+            ``{"external_id": str, "external_url": str|None, "vendor": str}``
+            so the API layer can persist the link.
+
+        Raises:
+            NotImplementedError: connector did not declare ``Capability.PUSH_CASE``.
+        """
+        raise NotImplementedError(
+            f"connector '{self.connector_id}' does not implement push_case"
+        )
+
+    async def push_status_change(
+        self,
+        case: dict[str, Any],
+        old_status: str,
+        new_status: str,
+        external_ref: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Project an AiSOC status transition onto the external ticket.
+
+        Args:
+            case: Same shape as ``push_case``'s argument.
+            old_status: AiSOC status the case is moving *from*. Useful for
+                detecting "open → closed" transitions that some ITSMs model
+                as a workflow action rather than a field write.
+            new_status: AiSOC status the case is moving *to*.
+            external_ref: ``{"external_id", "external_url", "vendor"}`` row
+                from ``case_external_refs``. ``None`` means "this case has
+                never been pushed before" — implementations may choose to
+                fall back to ``push_case`` in that situation.
+
+        Returns:
+            ``{"external_id", "external_url", "vendor", "external_status"}``.
+
+        Raises:
+            NotImplementedError: connector did not declare ``Capability.PUSH_STATUS``.
+        """
+        raise NotImplementedError(
+            f"connector '{self.connector_id}' does not implement push_status_change"
+        )

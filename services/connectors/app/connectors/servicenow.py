@@ -1,6 +1,9 @@
 """
 ServiceNow connector.
-Fetches security-relevant incidents from the ServiceNow Table API.
+
+Fetches security-relevant incidents from the ServiceNow Table API and,
+under Workstream 8, projects AiSOC cases / status changes back into
+ServiceNow as ``incident`` records.
 """
 
 from __future__ import annotations
@@ -20,6 +23,34 @@ _IMPACT_SEVERITY = {
     "1": "high",
     "2": "medium",
     "3": "low",
+}
+
+# WS8: AiSOC severity → ServiceNow ``impact`` numeric code. ServiceNow
+# uses 1=High, 2=Medium, 3=Low. We collapse ``critical`` and ``high``
+# onto 1 because the OOTB incident table doesn't have a separate
+# critical band, and ``info`` collapses onto 3 (Low) — there's no
+# "informational" tier in the standard schema.
+_SEVERITY_TO_IMPACT = {
+    "critical": "1",
+    "high": "1",
+    "medium": "2",
+    "low": "3",
+    "info": "3",
+}
+
+# WS8: AiSOC status → ServiceNow ``state`` numeric code. The default
+# ServiceNow incident state field is a numeric choice list:
+#   1=New, 2=In Progress, 3=On Hold, 6=Resolved, 7=Closed, 8=Canceled.
+# We map AiSOC's lifecycle onto that vocabulary. Customers with custom
+# state lists can override via ``connector_config.state_map`` in a
+# future iteration; the defaults below cover the OOTB table.
+_STATUS_MAP_SNOW = {
+    "new": "1",
+    "triaged": "2",
+    "investigating": "2",
+    "contained": "2",
+    "resolved": "6",
+    "closed": "7",
 }
 
 
@@ -50,9 +81,11 @@ class ServiceNowConnector(BaseConnector):
 
     @classmethod
     def capabilities(cls) -> tuple[Capability, ...]:
-        # Today the runtime only pulls incidents (alerts). Bidirectional ITSM
-        # — PUSH_CASE / PUSH_STATUS — lands in WS8 once we wire writebacks.
-        return (Capability.PULL_ALERTS,)
+        # WS8: bidirectional ticketing landed; ServiceNow can now mint
+        # incidents from AiSOC cases (PUSH_CASE) and project status
+        # transitions onto them (PUSH_STATUS) in addition to pulling
+        # incidents.
+        return (Capability.PULL_ALERTS, Capability.PUSH_CASE, Capability.PUSH_STATUS)
 
     def __init__(self, instance_url: str, username: str, password: str):
         self._base_url = instance_url.rstrip("/")
@@ -116,4 +149,143 @@ class ServiceNowConnector(BaseConnector):
             "actor": raw.get("opened_by", {}).get("display_value") if isinstance(raw.get("opened_by"), dict) else raw.get("opened_by"),
             "raw_event": raw,
             "created_at": raw.get("sys_created_on"),
+        }
+
+    # ------------------------------------------------------------------
+    # WS8: bidirectional ticket sync.
+    # ------------------------------------------------------------------
+    #
+    # ServiceNow's Table API is uniform across record types — POST to
+    # ``/api/now/table/incident`` to create, PATCH to
+    # ``/api/now/table/incident/{sys_id}`` to update. The implementation
+    # below intentionally targets the OOTB ``incident`` table because
+    # that's what 95% of customers use for security work; an enterprise
+    # using ``sn_si_incident`` (Security Incident Response) can override
+    # ``_table`` once we expose it as a config field.
+    #
+    # Two ServiceNow-specific gotchas the code defends against:
+    #
+    #   1. Records are identified by ``sys_id`` (a 32-char hex GUID),
+    #      NOT by ``number`` (e.g. ``INC0010023``). We persist
+    #      ``sys_id`` as the external_id and surface ``number`` only
+    #      in the URL the operator clicks.
+    #   2. State transitions can fail silently if the customer's UI
+    #      policy requires a ``close_code`` / ``close_notes`` for
+    #      Resolved/Closed states. We send minimal close metadata when
+    #      transitioning to those states so the API call doesn't bounce.
+
+    _table = "incident"
+
+    def _record_url(self, sys_id: str, number: str | None = None) -> str:
+        """Best-effort browser URL for a ServiceNow incident."""
+        if number:
+            return f"{self._base_url}/nav_to.do?uri=incident.do?sys_id={sys_id}"
+        return f"{self._base_url}/{self._table}.do?sys_id={sys_id}"
+
+    async def push_case(self, case: dict[str, Any]) -> dict[str, Any]:
+        """Mint a ServiceNow incident from an AiSOC case."""
+        severity = (case.get("severity") or "medium").lower()
+        title = case.get("title") or f"AiSOC case {case.get('case_number') or case.get('id')}"
+        description = case.get("description") or ""
+        case_id = case.get("id") or case.get("case_number")
+
+        payload: dict[str, Any] = {
+            "short_description": title[:160],  # ServiceNow short_description cap.
+            "description": description,
+            "impact": _SEVERITY_TO_IMPACT.get(severity, "2"),
+            "urgency": _SEVERITY_TO_IMPACT.get(severity, "2"),
+            # Round-trip the AiSOC case identifier in ``correlation_id``
+            # so the inbound webhook can find us without a custom field.
+            "correlation_id": f"aisoc:{case_id}",
+            "correlation_display": "AiSOC",
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self._base_url}/api/now/table/{self._table}",
+                headers={
+                    **self._auth_header(),
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"servicenow.push_case failed: {resp.status_code} {resp.text[:300]}",
+                    request=resp.request,
+                    response=resp,
+                )
+            data = (resp.json() or {}).get("result", {})
+
+        sys_id = data.get("sys_id") or ""
+        number = data.get("number")
+        return {
+            "external_id": sys_id,
+            "external_url": self._record_url(sys_id, number) if sys_id else None,
+            "vendor": self.connector_id,
+            "external_status": data.get("state") or "1",
+        }
+
+    async def push_status_change(
+        self,
+        case: dict[str, Any],
+        old_status: str,
+        new_status: str,
+        external_ref: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Project an AiSOC status transition onto a ServiceNow incident."""
+        if external_ref is None:
+            return await self.push_case(case)
+
+        sys_id = (external_ref or {}).get("external_id")
+        if not sys_id:
+            raise ValueError("servicenow.push_status_change: external_ref missing external_id")
+
+        target_state = _STATUS_MAP_SNOW.get(new_status)
+        if not target_state:
+            logger.info(
+                "servicenow.push_status_change.no_mapping",
+                external_id=sys_id,
+                old=old_status,
+                new=new_status,
+            )
+            return {
+                "external_id": sys_id,
+                "external_url": self._record_url(sys_id),
+                "vendor": self.connector_id,
+                "external_status": (external_ref or {}).get("external_status"),
+            }
+
+        payload: dict[str, Any] = {"state": target_state}
+        # Resolved/Closed states require close_code + close_notes on
+        # most stock ServiceNow instances or the API silently ignores
+        # the state change. Send a benign default so the transition
+        # actually applies.
+        if target_state in {"6", "7"}:
+            payload["close_code"] = "Closed/Resolved by Caller"
+            payload["close_notes"] = (
+                f"Closed by AiSOC (case {case.get('case_number') or case.get('id')})"
+            )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.patch(
+                f"{self._base_url}/api/now/table/{self._table}/{sys_id}",
+                headers={
+                    **self._auth_header(),
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    f"servicenow.push_status_change failed: {resp.status_code} {resp.text[:300]}",
+                    request=resp.request,
+                    response=resp,
+                )
+
+        return {
+            "external_id": sys_id,
+            "external_url": self._record_url(sys_id),
+            "vendor": self.connector_id,
+            "external_status": target_state,
         }

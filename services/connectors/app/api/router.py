@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from pydantic import Field as PydField
 
 from app.connectors import CONNECTOR_REGISTRY, list_connector_schemas
+from app.connectors.base import Capability
 from app.federated.query import QueryError, parse_unified_query
 
 logger = structlog.get_logger()
@@ -84,6 +85,87 @@ class FederatedQueryRequest(BaseModel):
         ...,
         description="UnifiedQuery payload: free_text, indicators[], since_seconds, limit.",
     )
+
+
+# ---------------------------------------------------------------------------
+# WS8: bidirectional ITSM push.
+# ---------------------------------------------------------------------------
+#
+# These two payloads carry the AiSOC case (already serialized to a dict by
+# the API layer) plus the same auth/runtime config envelope as the test and
+# query endpoints. Trust model is identical: ``auth_config`` arrives in
+# plaintext because the API service decrypted it via ``CredentialVault``
+# before forwarding.
+
+
+class PushCaseRequest(BaseModel):
+    """Mint or update an external ticket from an AiSOC case.
+
+    ``case`` is the dict the API layer assembled from the ``aisoc_cases``
+    row (id, case_number, title, description, severity, status, plus any
+    relevant joins). ``external_ref`` is optional and only set when the
+    caller already has a ``case_external_refs`` row to update — the
+    connector will treat it as "first-time push" otherwise.
+    """
+
+    auth_config: dict[str, Any] = PydField(default_factory=dict)
+    connector_config: dict[str, Any] = PydField(default_factory=dict)
+    case: dict[str, Any] = PydField(
+        ...,
+        description="AiSOC case payload to project onto the external ITSM.",
+    )
+    external_ref: dict[str, Any] | None = PydField(
+        default=None,
+        description="Existing case_external_refs row for idempotent updates.",
+    )
+
+
+class PushStatusChangeRequest(BaseModel):
+    """Project an AiSOC status transition onto an external ticket."""
+
+    auth_config: dict[str, Any] = PydField(default_factory=dict)
+    connector_config: dict[str, Any] = PydField(default_factory=dict)
+    case: dict[str, Any] = PydField(...)
+    old_status: str = PydField(..., description="AiSOC status the case is moving from.")
+    new_status: str = PydField(..., description="AiSOC status the case is moving to.")
+    external_ref: dict[str, Any] | None = PydField(
+        default=None,
+        description="Existing case_external_refs row. None falls through to push_case.",
+    )
+
+
+def _instantiate_or_422(cls: type, kwargs: dict[str, Any]) -> Any:
+    """Construct ``cls(**kwargs)`` and convert config errors to HTTP 422.
+
+    Pulled out into a helper because four endpoints now share the exact
+    same construction path; keeping it inline meant duplicating the
+    ``TypeError`` handling four times.
+    """
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"connector config does not match schema: {exc}",
+        ) from exc
+
+
+def _require_capability(cls: type, capability: Capability, connector_id: str) -> None:
+    """Reject calls to a connector that doesn't declare ``capability``.
+
+    ``BaseConnector`` already raises ``NotImplementedError`` from the
+    default ``push_case`` / ``push_status_change`` bodies, but failing
+    fast here gives a friendlier 501 with the connector_id pre-filled
+    instead of bubbling an opaque exception out of the runtime.
+    """
+    if capability not in cls.capabilities():
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                f"connector '{connector_id}' does not declare capability "
+                f"'{capability.value}'"
+            ),
+        )
 
 
 @router.get("/connectors")
@@ -250,6 +332,101 @@ async def run_federated_query(connector_id: str, payload: FederatedQueryRequest)
         "row_count": len(rows),
         "rows": rows,
     }
+
+
+@router.post("/connectors/{connector_id}/push_case")
+async def push_case(connector_id: str, payload: PushCaseRequest):
+    """Mint or upsert an external ITSM ticket from an AiSOC case.
+
+    Idempotency is the connector's responsibility: when ``external_ref``
+    is set, the connector should patch the existing ticket; when it's
+    None, it should create one and return enough metadata for the caller
+    to persist a ``case_external_refs`` row (``external_id``,
+    ``external_url``, ``vendor``, ``external_status``).
+
+    Returns the connector's ``{"external_id", "external_url", "vendor",
+    "external_status"}`` envelope. The API service maps that into the
+    ``case_external_refs`` table; we never persist anything here.
+    """
+    cls = CONNECTOR_REGISTRY.get(connector_id)
+    if cls is None:
+        raise HTTPException(status_code=404, detail=f"Connector '{connector_id}' not found")
+    _require_capability(cls, Capability.PUSH_CASE, connector_id)
+
+    kwargs = {**payload.auth_config, **payload.connector_config}
+    connector = _instantiate_or_422(cls, kwargs)
+
+    try:
+        result = await connector.push_case(payload.case)
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except Exception:
+        # Don't leak vendor errors verbatim — they sometimes echo request
+        # headers / payload fragments. The connector logs the full detail
+        # via structlog; the API service just sees a generic 502.
+        logger.exception(
+            "connector.push_case.runtime_error",
+            connector_id=_safe_log_val(connector_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Push to external ITSM failed. Check connector configuration and connectivity.",
+        )
+
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"connector '{connector_id}' returned unexpected push_case payload",
+        )
+    return result
+
+
+@router.post("/connectors/{connector_id}/push_status_change")
+async def push_status_change(connector_id: str, payload: PushStatusChangeRequest):
+    """Project an AiSOC status transition onto a previously-pushed ticket.
+
+    If ``external_ref`` is None we delegate to ``push_case`` (i.e. the
+    case is being reported to this ITSM for the first time as part of
+    the same status update). Otherwise we patch the existing ticket.
+    The connector decides which fields to map (state code, resolution,
+    close notes, etc.).
+    """
+    cls = CONNECTOR_REGISTRY.get(connector_id)
+    if cls is None:
+        raise HTTPException(status_code=404, detail=f"Connector '{connector_id}' not found")
+    _require_capability(cls, Capability.PUSH_STATUS, connector_id)
+
+    kwargs = {**payload.auth_config, **payload.connector_config}
+    connector = _instantiate_or_422(cls, kwargs)
+
+    try:
+        result = await connector.push_status_change(
+            payload.case,
+            payload.old_status,
+            payload.new_status,
+            external_ref=payload.external_ref,
+        )
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
+    except ValueError as exc:
+        # e.g. servicenow.push_status_change rejecting a missing sys_id.
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except Exception:
+        logger.exception(
+            "connector.push_status_change.runtime_error",
+            connector_id=_safe_log_val(connector_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Status sync to external ITSM failed. Check connector configuration and connectivity.",
+        )
+
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"connector '{connector_id}' returned unexpected push_status_change payload",
+        )
+    return result
 
 
 @router.get("/health")
