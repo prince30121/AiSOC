@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.v1.deps import AuthUser, require_permission
+from app.api.v1.deps import AuthUser
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 

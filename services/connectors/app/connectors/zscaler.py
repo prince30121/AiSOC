@@ -5,9 +5,8 @@ Fetches web security logs from Zscaler Internet Access (ZIA).
 
 from __future__ import annotations
 
-import hashlib
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx

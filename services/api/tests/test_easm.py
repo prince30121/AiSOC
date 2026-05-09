@@ -11,7 +11,6 @@ All tests run with mocked HTTP and socket calls — no live APIs required.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -19,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.easm import ExternalAsset, ExternalAssetDrift, ExternalAssetType
+from app.models.easm import ExternalAsset, ExternalAssetType
 from app.services.easm_discovery import (
     DiscoveredAsset,
     _shodan_search,

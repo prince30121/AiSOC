@@ -3,19 +3,16 @@ External Attack Surface Management (EASM) models (Tier 3.6).
 """
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    Column,
     DateTime,
     Enum as SQLAEnum,
     ForeignKey,
     Index,
     String,
-    Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base

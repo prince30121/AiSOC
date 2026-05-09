@@ -8,7 +8,6 @@ vulnerabilities so the agent can treat them uniformly.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -85,7 +84,6 @@ class TenableConnector(BaseConnector):
 
     async def fetch_alerts(self, since_seconds: int = 300) -> list[dict[str, Any]]:
         # Use the workbenches export filtered by last_found within the window.
-        since = datetime.now(UTC) - timedelta(seconds=since_seconds)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(

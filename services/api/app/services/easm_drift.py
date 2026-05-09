@@ -20,7 +20,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.easm import ExternalAsset, ExternalAssetDrift, ExternalAssetType
+from app.models.easm import ExternalAsset, ExternalAssetDrift
 from app.services.easm_discovery import DiscoveredAsset
 
 logger = logging.getLogger("aisoc.easm.drift")

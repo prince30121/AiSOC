@@ -25,7 +25,6 @@ import {
   type Connector,
   type ConnectorHealthSummary,
 } from '@/lib/api';
-import { ErrorState } from '@/components/ui/ErrorState';
 import { AddConnectorModal } from './AddConnectorModal';
 import { ConnectorInstanceList } from './ConnectorInstanceList';
 import { InboxTokensPanel } from './InboxTokensPanel';

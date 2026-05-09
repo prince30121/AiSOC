@@ -29,7 +29,6 @@ from __future__ import annotations
 import logging
 import re
 import secrets
-import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -39,6 +38,7 @@ from sqlalchemy import select, update
 
 from app.api.v1.deps import AuthUser, require_permission
 from app.core.config import settings
+from app.core.logging import safe_log_value
 from app.db.rls import TenantDBSession
 from app.models.inbox import TenantInboxToken
 
@@ -408,10 +408,10 @@ async def mint_token(
     await db.refresh(row)
 
     logger.info(
-        "tenant_inbox_token minted",
+        "tenant_inbox_token.minted",
         extra={
             "tenant_id": str(current_user.tenant_id),
-            "template_id": body.template_id,
+            "template_id": safe_log_value(body.template_id),
             "token_fingerprint": _fingerprint(token),
             "has_hmac": body.hmac_secret is not None,
         },

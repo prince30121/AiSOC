@@ -11,8 +11,6 @@ These tests run against an in-process SQLite/mock AsyncSession
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +18,6 @@ import pytest
 from app.services.mssp_rule_resolver import (
     ResolvedRule,
     resolve_effective_rules,
-    count_effective_rules,
 )
 
 

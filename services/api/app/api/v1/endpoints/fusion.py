@@ -34,6 +34,8 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.logging import safe_log_value
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/fusion", tags=["fusion"])
@@ -77,9 +79,11 @@ async def _proxy_get(path: str, params: dict[str, Any] | None = None) -> dict[st
             resp = await client.get(f"{_FUSION_URL}{safe_path}", params=params or {})
         if resp.status_code >= 500:
             logger.warning(
-                "Fusion upstream returned %s for %s; falling back to stub",
-                resp.status_code,
-                safe_path,
+                "fusion.upstream_error",
+                extra={
+                    "status_code": resp.status_code,
+                    "path": safe_log_value(safe_path),
+                },
             )
             return None
         if resp.status_code == 404:
@@ -91,7 +95,10 @@ async def _proxy_get(path: str, params: dict[str, Any] | None = None) -> dict[st
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        logger.warning("Fusion service unreachable (%s); using stub fallback", exc)
+        logger.warning(
+            "fusion.unreachable",
+            extra={"err": safe_log_value(str(exc))},
+        )
         return None
 
 

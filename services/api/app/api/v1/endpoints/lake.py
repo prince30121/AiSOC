@@ -40,6 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.deps import AuthUser, DBSession, require_permission
+from app.core.logging import safe_log_value
 from app.db.clickhouse import (
     LakeQueryError,
     LakeQueryNotConfiguredError,
@@ -274,11 +275,13 @@ async def execute_lake_sql(
         # non-allowlisted table, table function). 403 conveys that
         # this is an authorisation outcome, not a typo.
         logger.info(
-            "lake.sql.forbidden tenant_id=%s user=%s reason=%s sql=%r",
-            current_user.tenant_id,
-            current_user.email,
-            exc,
-            _scrub_sql_for_log(body.sql),
+            "lake.sql.forbidden",
+            extra={
+                "tenant_id": current_user.tenant_id,
+                "user": safe_log_value(current_user.email),
+                "reason": safe_log_value(str(exc)),
+                "sql": safe_log_value(_scrub_sql_for_log(body.sql)),
+            },
         )
         # Best-effort audit: failed access attempt is worth a row.
         await _audit_query_attempt(
@@ -296,10 +299,12 @@ async def execute_lake_sql(
         ) from exc
     except LakeSqlSyntaxError as exc:
         logger.info(
-            "lake.sql.syntax_error tenant_id=%s user=%s reason=%s",
-            current_user.tenant_id,
-            current_user.email,
-            exc,
+            "lake.sql.syntax_error",
+            extra={
+                "tenant_id": current_user.tenant_id,
+                "user": safe_log_value(current_user.email),
+                "reason": safe_log_value(str(exc)),
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

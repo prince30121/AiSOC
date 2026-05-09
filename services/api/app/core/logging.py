@@ -40,3 +40,36 @@ def configure_logging() -> None:
 
 def get_logger(name: str = __name__) -> structlog.BoundLogger:
     return structlog.get_logger(name)
+
+
+# Maximum length for a single user-derived value embedded in a log line.
+# Keeps logs readable and bounds memory if a caller passes pathological input.
+_MAX_LOG_VALUE_LEN = 256
+
+# Characters that can be used to forge log entries, break log parsers, or
+# inject ANSI escape sequences when logs are rendered to a terminal.
+_LOG_INJECTION_TRANSLATE = str.maketrans(
+    {
+        "\r": "\\r",
+        "\n": "\\n",
+        "\t": "\\t",
+        "\x00": "\\x00",
+        "\x1b": "\\x1b",
+    }
+)
+
+
+def safe_log_value(value: object, max_len: int = _MAX_LOG_VALUE_LEN) -> str:
+    """Sanitize an arbitrary value before embedding it in a log message.
+
+    Defends against log-injection (CWE-117) by escaping characters that can
+    forge new log entries (CR/LF/NUL/ESC) and by truncating overly long
+    user-controlled strings. Use whenever a log statement interpolates a value
+    that originated from an HTTP request, header, query string, or JSON body.
+    """
+    if value is None:
+        return "<none>"
+    text = str(value).translate(_LOG_INJECTION_TRANSLATE)
+    if len(text) > max_len:
+        text = text[:max_len] + "...<truncated>"
+    return text

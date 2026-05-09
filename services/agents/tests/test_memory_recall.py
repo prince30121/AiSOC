@@ -29,7 +29,6 @@ Metrics:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -43,7 +42,7 @@ sys.path.insert(0, str(_AGENTS_ROOT))
 os.environ.setdefault("DATABASE_URL", "")
 os.environ.setdefault("REDIS_URL", "")
 
-from app.memory import MemoryManager, MemoryTier  # noqa: E402
+from app.memory import MemoryManager  # noqa: E402
 from app.memory.models import OverrideFeedback  # noqa: E402
 from app.memory.session import _session_caches  # noqa: E402
 from app.memory.working import _FALLBACK as _WORKING_FALLBACK  # noqa: E402

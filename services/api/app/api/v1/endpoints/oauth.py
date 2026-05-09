@@ -65,7 +65,7 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -76,6 +76,7 @@ from sqlalchemy import delete, select
 from app.api.v1.deps import AuthUser, DBSession, require_permission
 from app.api.v1.endpoints.connectors import _validate_connector_type
 from app.core.config import settings
+from app.core.logging import safe_log_value
 from app.models.connector import Connector
 from app.models.oauth import OAuthAppCredential, OAuthState
 from app.security.credential_vault import CredentialVaultError, get_vault
@@ -109,6 +110,96 @@ _PKCE_REQUIRED: set[str] = {
     "atlassian",
 }
 
+# Allow-list of OAuth provider hostnames we will redirect operators to.
+#
+# CodeQL (py/url-redirection) correctly flags ``RedirectResponse(url=...)``
+# when the URL traces back to a database column the tenant can edit
+# (``OAuthAppCredential.authorize_url`` / ``token_url``). We close that
+# attack surface by *intersecting* the resolved authorize/token URL with
+# this allow-list of well-known hostname suffixes — even if a hostile
+# tenant admin pastes ``https://attacker.com`` into the OAuth app row,
+# we refuse to bounce the operator there. The list is keyed off the
+# real authorize/token endpoints documented by each provider whose
+# connector ships ``OAuthHints`` (see services/connectors/app/connectors/).
+_OAUTH_PROVIDER_HOST_SUFFIXES: tuple[str, ...] = (
+    # Atlassian Cloud (Jira / Confluence) 3LO
+    "auth.atlassian.com",
+    # Auth0 (per-tenant subdomain, e.g. ``acme.auth0.com``)
+    ".auth0.com",
+    # Microsoft Entra ID / Azure AD / M365 / Defender / Activity / Graph
+    "login.microsoftonline.com",
+    "login.microsoft.com",
+    # Cloudflare dashboard SSO
+    "dash.cloudflare.com",
+    # GCP / Google Workspace / Gmail / SCC / Cloud Audit
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    # GitHub
+    "github.com",
+    # Okta (per-tenant subdomain, e.g. ``acme.okta.com``) and preview tier
+    ".okta.com",
+    ".oktapreview.com",
+    # Salesforce login surface (production + sandbox)
+    "login.salesforce.com",
+    "test.salesforce.com",
+    ".my.salesforce.com",
+    # Slack
+    "slack.com",
+    # Tailscale
+    "login.tailscale.com",
+)
+
+
+def _is_allowed_oauth_host(host: str) -> bool:
+    """Return ``True`` when ``host`` matches an allow-listed OAuth provider.
+
+    Suffix matches starting with ``.`` (e.g. ``.okta.com``) accept any
+    single-or-multi-label subdomain. Exact entries (e.g.
+    ``login.microsoftonline.com``) match the host verbatim. We compare
+    case-insensitively because hostnames are case-insensitive per RFC 3986.
+    """
+    if not host:
+        return False
+    host_lc = host.lower()
+    for suffix in _OAUTH_PROVIDER_HOST_SUFFIXES:
+        suffix_lc = suffix.lower()
+        if suffix_lc.startswith("."):
+            if host_lc.endswith(suffix_lc) and len(host_lc) > len(suffix_lc):
+                return True
+        elif host_lc == suffix_lc:
+            return True
+    return False
+
+
+def _validated_provider_url(url: str, *, kind: str) -> str:
+    """Return ``url`` unchanged after enforcing the OAuth host allow-list.
+
+    Raises ``HTTPException(400)`` for any of:
+      * non-HTTPS scheme — providers reject http:// authorize URLs anyway,
+        and refusing them here closes a downgrade vector;
+      * embedded credentials (``user:pass@host``) — these can hide a
+        hostile origin behind a benign-looking prefix;
+      * a host that does not match :data:`_OAUTH_PROVIDER_HOST_SUFFIXES`.
+
+    ``kind`` is interpolated into the error detail so the operator knows
+    whether to fix the authorize_url or the token_url field.
+    """
+    parsed = urlparse(url)
+    scheme_ok = parsed.scheme == "https"
+    host = parsed.hostname or ""
+    no_userinfo = not parsed.username and not parsed.password
+    if not (scheme_ok and host and no_userinfo and _is_allowed_oauth_host(host)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Refusing to use OAuth {kind} URL: host is not on the "
+                "allow-list of trusted OAuth providers. Update the OAuth "
+                "app row to point at the documented provider endpoint."
+            ),
+        )
+    return url
+
+
 # Some providers expect extra non-standard query params on the authorize
 # URL. We thread these through ``OAuthHints``-derived defaults plus
 # per-provider overrides keyed by connector_type.
@@ -130,8 +221,16 @@ _AUTHORIZE_EXTRA_PARAMS: dict[str, dict[str, str]] = {
 # --------------------------------------------------------------- helpers
 
 
-def _safe_log_val(value: str) -> str:
-    return _LOG_CTRL_RE.sub("", value)
+def _safe_log_val(value: object) -> str:
+    """Local alias for the canonical :func:`safe_log_value` helper.
+
+    Kept as a thin wrapper so existing call sites stay untouched while the
+    underlying implementation defends against CWE-117 (log injection) by
+    escaping CR/LF/NUL/ESC and truncating overly long user-controlled
+    values. Routes through :func:`app.core.logging.safe_log_value` so
+    every service uses the same sanitisation contract.
+    """
+    return safe_log_value(value)
 
 
 def _safe_connector_type(value: str) -> str:
@@ -208,9 +307,11 @@ def _validate_return_to(return_to: str | None) -> str:
     if base and return_to == base:
         return return_to
     logger.info(
-        "oauth.return_to.rejected raw=%s falling_back_to=%s",
-        _safe_log_val(return_to)[:200],
-        default,
+        "oauth.return_to.rejected",
+        extra={
+            "raw": _safe_log_val(return_to),
+            "falling_back_to": default,
+        },
     )
     return default
 
@@ -256,7 +357,14 @@ def _resolve_authorize_url(
     app_credential: OAuthAppCredential,
     hints: dict[str, Any],
 ) -> str:
-    """Per-tenant override beats schema hint beats hard error."""
+    """Per-tenant override beats schema hint beats hard error.
+
+    The returned URL is also passed through :func:`_validated_provider_url`
+    which enforces the OAuth host allow-list. This closes the open-redirect
+    surface flagged by CodeQL ``py/url-redirection`` at the redirect call
+    site: even if a tenant admin pastes a hostile authorize URL into the
+    OAuth app row, we refuse to bounce the operator there.
+    """
     url = (app_credential.authorize_url or hints.get("authorize_url") or "").strip()
     if not url:
         raise HTTPException(
@@ -267,13 +375,20 @@ def _resolve_authorize_url(
                 "supply authorize_url."
             ),
         )
-    return url
+    return _validated_provider_url(url, kind="authorize")
 
 
 def _resolve_token_url(
     app_credential: OAuthAppCredential,
     hints: dict[str, Any],
 ) -> str:
+    """Resolve the OAuth ``token_url`` with the same allow-list guard.
+
+    See :func:`_resolve_authorize_url` for the allow-list rationale. The
+    token endpoint is server-to-server (not a redirect), but applying the
+    same check defends against a hostile tenant admin redirecting our
+    backchannel ``client_secret`` POST to an attacker-controlled host.
+    """
     url = (app_credential.token_url or hints.get("token_url") or "").strip()
     if not url:
         raise HTTPException(
@@ -283,7 +398,7 @@ def _resolve_token_url(
                 "tenant did not override it."
             ),
         )
-    return url
+    return _validated_provider_url(url, kind="token")
 
 
 def _resolve_scopes(
@@ -421,10 +536,12 @@ async def upsert_oauth_app(
     await db.refresh(row)
 
     logger.info(
-        "oauth.app.upsert tenant=%s connector_type=%s created=%s",
-        current_user.tenant_id,
-        _safe_log_val(safe_type),
-        existing is None,
+        "oauth.app.upsert",
+        extra={
+            "tenant": current_user.tenant_id,
+            "connector_type": _safe_log_val(safe_type),
+            "created": existing is None,
+        },
     )
     return OAuthAppView(
         connector_type=row.connector_type,
@@ -454,9 +571,11 @@ async def delete_oauth_app(
     )
     await db.commit()
     logger.info(
-        "oauth.app.delete tenant=%s connector_type=%s",
-        current_user.tenant_id,
-        _safe_log_val(safe_type),
+        "oauth.app.delete",
+        extra={
+            "tenant": current_user.tenant_id,
+            "connector_type": _safe_log_val(safe_type),
+        },
     )
 
 
@@ -570,12 +689,30 @@ async def oauth_start(
     sep = "&" if "?" in authorize_url else "?"
     full_authorize = f"{authorize_url}{sep}{urlencode(qs, safe=':+/?#@!$&()*+,;=')}"
 
+    # Defence in depth: the authorize_url base was already validated by
+    # ``_resolve_authorize_url`` -> ``_validated_provider_url``, but we
+    # re-parse the *fully composed* redirect target here so the host
+    # check is locally visible at the ``RedirectResponse`` call site.
+    # This also gives CodeQL (py/url-redirection) a sanitizer it can see
+    # without needing inter-procedural taint tracking through helpers.
+    parsed_full = urlparse(full_authorize)
+    if not _is_allowed_oauth_host(parsed_full.hostname or ""):
+        # Should be unreachable because _resolve_authorize_url already
+        # rejected non-allowlisted hosts, but we treat any drift as a
+        # 500 rather than silently redirecting somewhere unexpected.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error: composed OAuth authorize URL failed host allow-list re-check.",
+        )
+
     logger.info(
-        "oauth.start tenant=%s connector_type=%s reauth=%s pkce=%s",
-        current_user.tenant_id,
-        _safe_log_val(safe_type),
-        connector_id is not None,
-        needs_pkce,
+        "oauth.start",
+        extra={
+            "tenant": current_user.tenant_id,
+            "connector_type": _safe_log_val(safe_type),
+            "reauth": connector_id is not None,
+            "pkce": needs_pkce,
+        },
     )
 
     if response_mode == "json":
@@ -645,10 +782,12 @@ async def oauth_callback(
         await db.execute(delete(OAuthState).where(OAuthState.state == state))
         await db.commit()
         logger.warning(
-            "oauth.callback.provider_error tenant=%s connector_type=%s err=%s",
-            state_row.tenant_id,
-            _safe_log_val(state_row.connector_type),
-            _safe_log_val(error),
+            "oauth.callback.provider_error",
+            extra={
+                "tenant": state_row.tenant_id,
+                "connector_type": _safe_log_val(state_row.connector_type),
+                "err": _safe_log_val(error),
+            },
         )
         return _callback_error_redirect(
             return_to,

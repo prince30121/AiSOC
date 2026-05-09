@@ -87,6 +87,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.api.v1.deps import DBSession
+from app.core.logging import safe_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,9 @@ async def _fetch_token_and_connector(
         # carries the fingerprint for ops debugging.
         logger.info(
             "inbox_itsm.token_not_found",
-            extra={"token_fingerprint": f"...{tenant_token[-8:]}"},
+            extra={
+                "token_fingerprint": safe_log_value(f"...{tenant_token[-8:]}")
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -426,9 +429,9 @@ async def _fetch_token_and_connector(
         logger.warning(
             "inbox_itsm.cross_tenant_attempt",
             extra={
-                "token_tenant_id": str(token_row.tenant_id),
-                "connector_tenant_id": str(connector_row.tenant_id),
-                "connector_id": str(connector_instance_id),
+                "token_tenant_id": safe_log_value(token_row.tenant_id),
+                "connector_tenant_id": safe_log_value(connector_row.tenant_id),
+                "connector_id": safe_log_value(connector_instance_id),
             },
         )
         raise HTTPException(
@@ -649,9 +652,9 @@ async def inbound_itsm_webhook(
         logger.info(
             "inbox_itsm.payload_missing_external_id",
             extra={
-                "vendor": vendor,
-                "connector_id": str(connector_instance_id),
-                "tenant_id": str(token_row.tenant_id),
+                "vendor": safe_log_value(vendor),
+                "connector_id": safe_log_value(connector_instance_id),
+                "tenant_id": safe_log_value(token_row.tenant_id),
             },
         )
         return InboundResult(
@@ -693,10 +696,10 @@ async def inbound_itsm_webhook(
         logger.info(
             "inbox_itsm.unlinked_external_id",
             extra={
-                "vendor": vendor,
-                "external_id": external_id,
-                "connector_id": str(connector_instance_id),
-                "tenant_id": str(token_row.tenant_id),
+                "vendor": safe_log_value(vendor),
+                "external_id": safe_log_value(external_id),
+                "connector_id": safe_log_value(connector_instance_id),
+                "tenant_id": safe_log_value(token_row.tenant_id),
             },
         )
         return InboundResult(
@@ -794,9 +797,9 @@ async def inbound_itsm_webhook(
         logger.exception(
             "inbox_itsm.apply_failed",
             extra={
-                "vendor": vendor,
-                "external_id": external_id,
-                "case_id": str(ref_row.aisoc_case_id),
+                "vendor": safe_log_value(vendor),
+                "external_id": safe_log_value(external_id),
+                "case_id": safe_log_value(ref_row.aisoc_case_id),
             },
         )
         raise HTTPException(
@@ -807,11 +810,11 @@ async def inbound_itsm_webhook(
     logger.info(
         "inbox_itsm.status_applied",
         extra={
-            "vendor": vendor,
-            "external_id": external_id,
-            "case_id": str(ref_row.aisoc_case_id),
-            "old_status": ref_row.status,
-            "new_status": new_status,
+            "vendor": safe_log_value(vendor),
+            "external_id": safe_log_value(external_id),
+            "case_id": safe_log_value(ref_row.aisoc_case_id),
+            "old_status": safe_log_value(ref_row.status),
+            "new_status": safe_log_value(new_status),
         },
     )
     return InboundResult(

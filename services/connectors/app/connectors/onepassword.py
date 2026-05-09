@@ -118,7 +118,6 @@ class OnePasswordConnector(BaseConnector):
         elif category == "firewall_failed":
             severity = "high"
 
-        session = raw.get("session", {}) or {}
         client_info = raw.get("client", {}) or {}
 
         return {

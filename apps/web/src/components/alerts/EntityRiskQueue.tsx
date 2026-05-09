@@ -483,9 +483,6 @@ export function EntityRiskQueue() {
   const total = stats?.total ?? entities.length;
   const alertCount = stats?.alert_count ?? entities.reduce((sum, e) => sum + e.alert_count, 0);
 
-  const fusionUnavailable =
-    queueError instanceof Error && /503|404|fetch/i.test(queueError.message);
-
   return (
     <div className="space-y-4">
       {/* Stats strip — anchored on the 2026 KPI bar */}

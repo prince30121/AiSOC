@@ -31,7 +31,6 @@ _SERVICE_TOKEN = os.getenv("AGENTS_API_TOKEN")
 
 # Score thresholds (0.0–1.0) that mirror the buckets in graph_service.py.
 _BLAST_HIGH = 0.7
-_BLAST_MED = 0.4
 
 # Cap how many entities we run blast-radius on per run to keep tail latency
 # bounded — the graph traversal is the most expensive part of the workflow.

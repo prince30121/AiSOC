@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app.api.v1.deps import AuthUser, DBSession
+from app.core.logging import safe_log_value
 from app.services.case_fanout import (
     FanoutResult,
     fanout_create_case,
@@ -936,7 +937,13 @@ async def _agents_proxy(method: str, path: str, **kwargs: Any) -> httpx.Response
         async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.request(method, url, **kwargs)
     except httpx.HTTPError as exc:
-        logger.exception("Agents service request failed: %s %s", method, safe_path)
+        logger.exception(
+            "agents_proxy.request_failed",
+            extra={
+                "method": safe_log_value(method),
+                "path": safe_log_value(safe_path),
+            },
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Agents service unavailable: {exc}",

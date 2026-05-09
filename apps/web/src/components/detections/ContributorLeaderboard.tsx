@@ -14,13 +14,6 @@ interface Contributor {
   badge: 'platinum' | 'gold' | 'silver' | 'bronze';
 }
 
-function badgeFor(count: number): Contributor['badge'] {
-  if (count >= 50) return 'platinum';
-  if (count >= 20) return 'gold';
-  if (count >= 10) return 'silver';
-  return 'bronze';
-}
-
 const BADGE_STYLES: Record<Contributor['badge'], { bg: string; text: string; border: string; label: string }> = {
   platinum: { bg: 'bg-violet-500/10', text: 'text-violet-300', border: 'border-violet-500/30', label: 'Platinum' },
   gold:     { bg: 'bg-amber-500/10',  text: 'text-amber-300',  border: 'border-amber-500/30',  label: 'Gold' },

@@ -208,7 +208,7 @@ function AttackHeatmap({ cells }: { cells: AttackHeatmapCell[] }) {
 }
 
 export function SOCMetricsDashboard() {
-  const { data, error, isLoading, mutate } = useSWR<SOCMetrics>(
+  const { data, mutate } = useSWR<SOCMetrics>(
     "/api/v1/metrics/soc",
     safeFetcher<SOCMetrics>,
     {
@@ -354,7 +354,7 @@ export function SOCMetricsDashboard() {
 }
 
 function CostTelemetryPanel() {
-  const { data, error, isLoading } = useSWR<CostAggregate>(
+  const { data, isLoading } = useSWR<CostAggregate>(
     "/api/v1/investigations/costs/aggregate?window_days=30",
     safeFetcher<CostAggregate>,
     {

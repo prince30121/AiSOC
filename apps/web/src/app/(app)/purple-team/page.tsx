@@ -177,14 +177,6 @@ const MOCK_COVERAGE: CoverageMatrix = {
   summary: { total_techniques: 201, tested_techniques: 14, detected_techniques: 10, overall_coverage: 0.71 },
 }
 
-const MOCK_EXECUTIONS: Execution[] = [
-  { id: 'ex-1', source: 'atomic', technique_id: 'T1059.001', test_name: 'PowerShell Download Cradle', status: 'success', started_at: '2026-05-06T10:00:00Z', completed_at: '2026-05-06T10:01:30Z', detected: true, detection_latency_seconds: 45, created_at: '2026-05-06T10:00:00Z' },
-  { id: 'ex-2', source: 'caldera', technique_id: 'T1003.001', test_name: 'Mimikatz Credential Dump', status: 'success', started_at: '2026-05-06T10:05:00Z', completed_at: '2026-05-06T10:06:00Z', detected: true, detection_latency_seconds: 12, created_at: '2026-05-06T10:05:00Z' },
-  { id: 'ex-3', source: 'atomic', technique_id: 'T1566.001', test_name: 'Spearphishing Attachment', status: 'failed', started_at: '2026-05-06T10:10:00Z', completed_at: '2026-05-06T10:10:45Z', detected: false, detection_latency_seconds: null, created_at: '2026-05-06T10:10:00Z' },
-  { id: 'ex-4', source: 'atomic', technique_id: 'T1053.005', test_name: 'Scheduled Task via schtasks', status: 'success', started_at: '2026-05-06T10:15:00Z', completed_at: '2026-05-06T10:16:00Z', detected: null, detection_latency_seconds: null, created_at: '2026-05-06T10:15:00Z' },
-  { id: 'ex-5', source: 'caldera', technique_id: 'T1021.001', test_name: 'Remote Desktop Protocol', status: 'running', started_at: '2026-05-06T10:20:00Z', completed_at: null, detected: null, detection_latency_seconds: null, created_at: '2026-05-06T10:20:00Z' },
-]
-
 // Visual ring around a technique cell that reflects how it changed since the
 // previous snapshot. Kept subtle so the underlying coverage color still reads.
 function driftRing(status: DriftStatus | undefined): string {
@@ -212,7 +204,7 @@ function driftDeltaLabel(d: number, suffix = ''): string {
 // --------------------------------------------------------------------------
 
 function CoverageHeatmap() {
-  const { data, error, isLoading } = useSWR<CoverageMatrix>(
+  const { data } = useSWR<CoverageMatrix>(
     `${API}/api/v1/purple-team/coverage?tenant_id=${TENANT_ID}`,
     fetcher,
     { refreshInterval: 30000, fallbackData: MOCK_COVERAGE }

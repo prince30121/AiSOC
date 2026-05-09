@@ -787,11 +787,13 @@ async def update_connector_capabilities(
     await db.refresh(connector)
 
     logger.info(
-        "connector.capabilities.updated tenant_id=%s connector_id=%s connector_type=%s allowed=%s",
-        current_user.tenant_id,
-        connector_id,
-        _safe_log_val(connector.connector_type),
-        request.allowed_capabilities,
+        "connector.capabilities.updated",
+        extra={
+            "tenant_id": current_user.tenant_id,
+            "connector_id": str(connector_id),
+            "connector_type": _safe_log_val(connector.connector_type),
+            "allowed": request.allowed_capabilities,
+        },
     )
 
     return _build_connector_response(connector)
@@ -1106,10 +1108,12 @@ async def troubleshoot_connection(
         )
     safe_type = _safe_connector_type(request.connector_type)
     logger.info(
-        "connectors.troubleshoot type=%s keys=%s err_len=%d",
-        _safe_log_val(safe_type),
-        sorted(request.auth_config_keys)[:8],  # cap to avoid log spam
-        len(request.error),
+        "connectors.troubleshoot",
+        extra={
+            "type": _safe_log_val(safe_type),
+            "keys": sorted(request.auth_config_keys)[:8],  # cap to avoid log spam
+            "err_len": len(request.error),
+        },
     )
     return _troubleshoot(request.error, safe_type)
 

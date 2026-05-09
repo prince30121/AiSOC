@@ -7,7 +7,6 @@ under Workstream 8, projects AiSOC cases / status changes back into Jira.
 from __future__ import annotations
 
 from base64 import b64encode
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
