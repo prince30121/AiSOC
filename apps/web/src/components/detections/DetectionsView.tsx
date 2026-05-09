@@ -15,6 +15,8 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ContributorLeaderboard } from './ContributorLeaderboard';
+import { MitreRuleHeatmap } from './MitreRuleHeatmap';
+import { DriftInbox } from './DriftInbox';
 
 // ─── Demo fallback ────────────────────────────────────────────────────────────
 
@@ -134,6 +136,30 @@ const SEVERITY_BADGE: Record<string, string> = {
   low: 'bg-blue-500/10 text-blue-300 ring-blue-500/40',
 };
 
+// ─── Tabs ────────────────────────────────────────────────────────────────────
+
+type DetectionsTab = 'rules' | 'coverage' | 'drift';
+
+const TABS: { id: DetectionsTab; label: string; description: string }[] = [
+  {
+    id: 'rules',
+    label: 'Rules',
+    description: 'Author, tune, and operate the active rule library.',
+  },
+  {
+    id: 'coverage',
+    label: 'Coverage',
+    description:
+      'Rule-centric MITRE ATT&CK heatmap — see what kill-chain stages are well covered and where the tuning gaps are.',
+  },
+  {
+    id: 'drift',
+    label: 'Drift',
+    description:
+      'Rules that need attention: noisy false-positive rates, low confidence, or stale ones that have stopped firing.',
+  },
+];
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DetectionsView() {
@@ -144,13 +170,25 @@ export function DetectionsView() {
   );
 
   const useFallback = !!error;
-  const rules = data?.rules ?? (useFallback ? DEMO_RULES : []);
+  // Memoise so `useMemo(filtered)` and selection helpers don't see a fresh
+  // array reference on every render — important because we feed `rules`
+  // into a downstream useMemo dep array.
+  const rules = useMemo<DetectionRule[]>(
+    () => data?.rules ?? (useFallback ? DEMO_RULES : []),
+    [data, useFallback],
+  );
 
+  const [tab, setTab] = useState<DetectionsTab>('rules');
   const [search, setSearch] = useState('');
   const [language, setLanguage] = useState<DetectionLanguage | 'all'>('all');
   const [enabledFilter, setEnabledFilter] = useState<'all' | 'on' | 'off'>(
     'all',
   );
+
+  // Selection state for bulk operations. We keep it as a Set so we can
+  // do O(1) `has()` checks while rendering each rule card.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkPending, setBulkPending] = useState(false);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -170,6 +208,37 @@ export function DetectionsView() {
       return hay.includes(q);
     });
   }, [rules, search, language, enabledFilter]);
+
+  // ─── Selection helpers ─────────────────────────────────────────────────────
+
+  const toggleSelected = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected =
+    filtered.length > 0 && filtered.every((r) => selected.has(r.id));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      if (allFilteredSelected) {
+        const next = new Set(prev);
+        for (const r of filtered) next.delete(r.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const r of filtered) next.add(r.id);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  // ─── Mutations ─────────────────────────────────────────────────────────────
 
   const toggleEnabled = async (rule: DetectionRule) => {
     const next = !rule.enabled;
@@ -200,6 +269,76 @@ export function DetectionsView() {
     }
   };
 
+  const runBulkToggle = async (enabled: boolean) => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+
+    if (useFallback) {
+      // Demo mode — apply optimistically with no backend round-trip.
+      mutate(
+        (curr) =>
+          curr
+            ? {
+                ...curr,
+                rules: curr.rules.map((r) =>
+                  selected.has(r.id) ? { ...r, enabled } : r,
+                ),
+              }
+            : curr,
+        { revalidate: false },
+      );
+      toast.success(
+        `${ids.length} rule${ids.length === 1 ? '' : 's'} ${enabled ? 'enabled' : 'disabled'} (demo)`,
+      );
+      clearSelection();
+      return;
+    }
+
+    setBulkPending(true);
+    // Optimistic update — flip enabled state in-memory so the UI reflects the
+    // intent immediately. We re-fetch on completion to reconcile against
+    // anything the backend skipped.
+    mutate(
+      (curr) =>
+        curr
+          ? {
+              ...curr,
+              rules: curr.rules.map((r) =>
+                selected.has(r.id) ? { ...r, enabled } : r,
+              ),
+            }
+          : curr,
+      { revalidate: false },
+    );
+
+    try {
+      const result = await detectionApi.bulkToggle(ids, enabled);
+      const updatedCount = result.updated;
+      const skippedCount = result.skipped.length;
+      if (updatedCount > 0) {
+        toast.success(
+          `${updatedCount} rule${updatedCount === 1 ? '' : 's'} ${enabled ? 'enabled' : 'disabled'}` +
+            (skippedCount > 0
+              ? ` — ${skippedCount} built-in or unknown skipped`
+              : ''),
+        );
+      } else if (skippedCount > 0) {
+        toast(
+          `No rules updated — ${skippedCount} were built-in or unknown.`,
+          { icon: 'ℹ️' },
+        );
+      }
+      clearSelection();
+      mutate();
+    } catch (err) {
+      console.warn('Bulk toggle failed', err);
+      toast.error('Could not update rules');
+      mutate(); // Re-fetch to revert
+    } finally {
+      setBulkPending(false);
+    }
+  };
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -211,9 +350,8 @@ export function DetectionsView() {
             Detection rules
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-gray-500">
-            Author, test, and operate detection logic across log sources. Rules
-            run continuously against ingested telemetry and emit alerts when
-            triggered.
+            {TABS.find((t) => t.id === tab)?.description ??
+              'Author, test, and operate detection logic across log sources.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -241,6 +379,34 @@ export function DetectionsView() {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div
+        className="flex gap-1 rounded-md border border-gray-800 bg-gray-950 p-0.5 text-sm"
+        role="tablist"
+        aria-label="Detection management views"
+      >
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => {
+              setTab(t.id);
+              if (t.id !== 'rules') clearSelection();
+            }}
+            className={clsx(
+              'flex-1 rounded px-3 py-1.5 transition-colors sm:flex-none sm:min-w-[7rem]',
+              tab === t.id
+                ? 'bg-gray-800 text-gray-100'
+                : 'text-gray-400 hover:text-gray-200',
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       {/* Demo banner */}
       {useFallback && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-200">
@@ -249,132 +415,209 @@ export function DetectionsView() {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex flex-col gap-3 rounded-lg border border-gray-800 bg-gray-900/40 p-3 lg:flex-row lg:items-center">
-        <div className="relative flex-1">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, tag, or technique (T1059, lolbin, identity)…"
-            className="w-full rounded-md border border-gray-800 bg-gray-950 px-9 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none transition-colors focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/40"
-          />
-          <svg
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" strokeLinecap="round" />
-          </svg>
-        </div>
+      {tab === 'rules' && (
+        <>
+          {/* Filters */}
+          <div className="flex flex-col gap-3 rounded-lg border border-gray-800 bg-gray-900/40 p-3 lg:flex-row lg:items-center">
+            <div className="relative flex-1">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, tag, or technique (T1059, lolbin, identity)…"
+                className="w-full rounded-md border border-gray-800 bg-gray-950 px-9 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none transition-colors focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/40"
+              />
+              <svg
+                className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+              </svg>
+            </div>
 
-        <select
-          value={language}
-          onChange={(e) =>
-            setLanguage(e.target.value as DetectionLanguage | 'all')
-          }
-          className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300 outline-none focus:border-blue-500/60"
-        >
-          <option value="all">All languages</option>
-          <option value="sigma">Sigma</option>
-          <option value="yara">YARA</option>
-          <option value="kql">KQL</option>
-          <option value="eql">EQL</option>
-          <option value="lucene">Lucene</option>
-          <option value="regex">Regex</option>
-        </select>
-
-        <div className="inline-flex rounded-md border border-gray-800 bg-gray-950 p-0.5 text-xs">
-          {(['all', 'on', 'off'] as const).map((opt) => (
-            <button
-              key={opt}
-              onClick={() => setEnabledFilter(opt)}
-              className={clsx(
-                'rounded px-3 py-1.5 transition-colors',
-                enabledFilter === opt
-                  ? 'bg-gray-800 text-gray-100'
-                  : 'text-gray-400 hover:text-gray-200',
-              )}
+            <select
+              value={language}
+              onChange={(e) =>
+                setLanguage(e.target.value as DetectionLanguage | 'all')
+              }
+              className="rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-300 outline-none focus:border-blue-500/60"
             >
-              {opt === 'all' ? 'All' : opt === 'on' ? 'Enabled' : 'Disabled'}
-            </button>
-          ))}
-        </div>
-      </div>
+              <option value="all">All languages</option>
+              <option value="sigma">Sigma</option>
+              <option value="yara">YARA</option>
+              <option value="kql">KQL</option>
+              <option value="eql">EQL</option>
+              <option value="lucene">Lucene</option>
+              <option value="regex">Regex</option>
+            </select>
 
-      {/* Body */}
-      {isLoading ? (
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-24 w-full" />
-          ))}
-        </div>
-      ) : filtered.length === 0 ? (
-        rules.length === 0 ? (
-          <EmptyState
-            title="No detection rules yet"
-            description="Author your first detection in Sigma, KQL, or EQL — or import the AiSOC starter pack to bootstrap coverage across the MITRE ATT&CK matrix."
-            action={
-              <div className="flex gap-2">
-                <Link
-                  href="/detection/new"
-                  className="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600"
-                >
-                  Create a rule
-                </Link>
+            <div className="inline-flex rounded-md border border-gray-800 bg-gray-950 p-0.5 text-xs">
+              {(['all', 'on', 'off'] as const).map((opt) => (
                 <button
-                  onClick={() =>
-                    toast('Starter pack import is coming soon')
-                  }
-                  className="rounded-md border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800"
+                  key={opt}
+                  type="button"
+                  onClick={() => setEnabledFilter(opt)}
+                  className={clsx(
+                    'rounded px-3 py-1.5 transition-colors',
+                    enabledFilter === opt
+                      ? 'bg-gray-800 text-gray-100'
+                      : 'text-gray-400 hover:text-gray-200',
+                  )}
                 >
-                  Import starter pack
+                  {opt === 'all' ? 'All' : opt === 'on' ? 'Enabled' : 'Disabled'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Bulk action bar — appears when rules are selected. */}
+          {selected.size > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-3 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-2.5 text-sm"
+              role="toolbar"
+              aria-label="Bulk rule actions"
+            >
+              <span className="text-blue-200">
+                <span className="font-mono font-semibold">{selected.size}</span>{' '}
+                rule{selected.size === 1 ? '' : 's'} selected
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => runBulkToggle(true)}
+                  disabled={bulkPending}
+                  className="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Enable
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runBulkToggle(false)}
+                  disabled={bulkPending}
+                  className="rounded-md bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-100 transition-colors hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Disable
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={bulkPending}
+                  className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+                >
+                  Clear
                 </button>
               </div>
-            }
-          />
-        ) : (
-          <EmptyState
-            title="No rules match your filters"
-            description="Try clearing the search, switching language, or showing all enabled states."
-            action={
-              <button
-                onClick={() => {
-                  setSearch('');
-                  setLanguage('all');
-                  setEnabledFilter('all');
-                }}
-                className="rounded-md border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800"
-              >
-                Clear filters
-              </button>
-            }
-          />
-        )
-      ) : (
-        <ul className="space-y-3">
-          {filtered.map((rule) => (
-            <li key={rule.id}>
-              <RuleCard rule={rule} onToggle={() => toggleEnabled(rule)} />
-            </li>
-          ))}
-        </ul>
+            </div>
+          )}
+
+          {/* Body */}
+          {isLoading ? (
+            <div className="space-y-3">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-24 w-full" />
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
+            rules.length === 0 ? (
+              <EmptyState
+                title="No detection rules yet"
+                description="Author your first detection in Sigma, KQL, or EQL — or import the AiSOC starter pack to bootstrap coverage across the MITRE ATT&CK matrix."
+                action={
+                  <div className="flex gap-2">
+                    <Link
+                      href="/detection/new"
+                      className="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600"
+                    >
+                      Create a rule
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toast('Starter pack import is coming soon')
+                      }
+                      className="rounded-md border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800"
+                    >
+                      Import starter pack
+                    </button>
+                  </div>
+                }
+              />
+            ) : (
+              <EmptyState
+                title="No rules match your filters"
+                description="Try clearing the search, switching language, or showing all enabled states."
+                action={
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearch('');
+                      setLanguage('all');
+                      setEnabledFilter('all');
+                    }}
+                    className="rounded-md border border-gray-700 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800"
+                  >
+                    Clear filters
+                  </button>
+                }
+              />
+            )
+          ) : (
+            <>
+              {/* Select-all header — small horizontal strip above the list */}
+              <div className="flex items-center gap-2 px-1 text-xs text-gray-500">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={toggleSelectAll}
+                  aria-label={
+                    allFilteredSelected
+                      ? 'Deselect all visible rules'
+                      : 'Select all visible rules'
+                  }
+                  className="h-3.5 w-3.5 cursor-pointer rounded border-gray-700 bg-gray-950 accent-blue-500"
+                />
+                <span>
+                  {allFilteredSelected
+                    ? `All ${filtered.length} visible rule${filtered.length === 1 ? '' : 's'} selected`
+                    : `Select all ${filtered.length} visible rule${filtered.length === 1 ? '' : 's'}`}
+                </span>
+              </div>
+              <ul className="space-y-3">
+                {filtered.map((rule) => (
+                  <li key={rule.id}>
+                    <RuleCard
+                      rule={rule}
+                      selected={selected.has(rule.id)}
+                      onSelect={() => toggleSelected(rule.id)}
+                      onToggle={() => toggleEnabled(rule)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          {/* Footer / errors */}
+          {error && !useFallback && (
+            <ErrorState
+              title="Couldn't load detection rules"
+              description="The detection service didn't respond. We've shown the local demo set instead."
+              error={error}
+              onRetry={() => mutate()}
+            />
+          )}
+
+          {/* Contributor leaderboard */}
+          <ContributorLeaderboard />
+        </>
       )}
 
-      {/* Footer / errors */}
-      {error && !useFallback && (
-        <ErrorState
-          title="Couldn't load detection rules"
-          description="The detection service didn't respond. We've shown the local demo set instead."
-          error={error}
-          onRetry={() => mutate()}
-        />
-      )}
+      {tab === 'coverage' && <MitreRuleHeatmap />}
 
-      {/* Contributor leaderboard */}
-      <ContributorLeaderboard />
+      {tab === 'drift' && <DriftInbox />}
     </div>
   );
 }
@@ -383,18 +626,40 @@ export function DetectionsView() {
 
 interface RuleCardProps {
   rule: DetectionRule;
+  selected: boolean;
+  onSelect: () => void;
   onToggle: () => void;
 }
 
-function RuleCard({ rule, onToggle }: RuleCardProps) {
+function RuleCard({ rule, selected, onSelect, onToggle }: RuleCardProps) {
   return (
     <Link
       href={`/detection/${rule.id}`}
-      className="group block rounded-lg border border-gray-800 bg-gray-900/40 p-4 transition-colors hover:border-gray-700 hover:bg-gray-900/70"
+      className={clsx(
+        'group block rounded-lg border bg-gray-900/40 p-4 transition-colors',
+        selected
+          ? 'border-blue-500/50 bg-blue-500/5 hover:bg-blue-500/10'
+          : 'border-gray-800 hover:border-gray-700 hover:bg-gray-900/70',
+      )}
     >
       <div className="flex items-start gap-4">
-        {/* Status dot */}
+        {/* Selection checkbox + status dot stacked */}
         <div className="mt-1 flex flex-col items-center gap-2">
+          <input
+            type="checkbox"
+            checked={selected}
+            onClick={(e) => {
+              // Don't navigate to the rule detail page on checkbox click.
+              e.preventDefault();
+              e.stopPropagation();
+              onSelect();
+            }}
+            onChange={() => {
+              // Click handler does the work; keep onChange to satisfy React.
+            }}
+            aria-label={`Select rule ${rule.name}`}
+            className="h-3.5 w-3.5 cursor-pointer rounded border-gray-700 bg-gray-950 accent-blue-500"
+          />
           <span
             className={clsx(
               'inline-flex h-2.5 w-2.5 rounded-full',
@@ -495,6 +760,7 @@ function Toggle({ enabled, onChange }: ToggleProps) {
       }}
       role="switch"
       aria-checked={enabled}
+      aria-label={enabled ? 'Disable rule' : 'Enable rule'}
       className={clsx(
         'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
         enabled ? 'bg-emerald-500/70' : 'bg-gray-700',
@@ -509,4 +775,3 @@ function Toggle({ enabled, onChange }: ToggleProps) {
     </button>
   );
 }
-

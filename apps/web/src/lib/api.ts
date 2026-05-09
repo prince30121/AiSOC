@@ -2081,6 +2081,70 @@ export interface DetectionRule {
   hitCount?: number;
 }
 
+// ─── Detection management UI (WS-B3) ─────────────────────────────────────────
+//
+// Rule-centric MITRE coverage, bulk enable/disable, and the drift inbox are
+// powered by ``services/api/app/api/v1/endpoints/detection_compat.py``.
+// Schemas are mirrored here field-for-field so the UI gets autocomplete and
+// the compiler catches drift if the backend payload ever changes shape.
+
+export interface DetectionCoverageCell {
+  techniqueId: string;
+  tactic: string | null;
+  techniqueName?: string | null;
+  totalRules: number;
+  activeRules: number;
+  inactiveRules: number;
+}
+
+export interface DetectionCoverageSummary {
+  totalRules: number;
+  activeRules: number;
+  inactiveRules: number;
+  techniques: number;
+  /** Techniques with at least one *active* rule. */
+  coveredTechniques: number;
+}
+
+export interface DetectionCoverage {
+  tactics: string[];
+  cells: DetectionCoverageCell[];
+  summary: DetectionCoverageSummary;
+  generatedAt: string;
+}
+
+export interface DetectionDriftEntry {
+  ruleId: string;
+  name: string;
+  severity: string;
+  enabled: boolean;
+  confidence: number;
+  fpRate: number;
+  lastTriggeredAt: string | null;
+  daysSinceTriggered: number | null;
+  /** ``high_fp_rate``, ``low_confidence``, ``stale``. */
+  issues: string[];
+}
+
+export interface DetectionDriftSummary {
+  total: number;
+  highFpRate: number;
+  lowConfidence: number;
+  stale: number;
+}
+
+export interface DetectionDrift {
+  entries: DetectionDriftEntry[];
+  summary: DetectionDriftSummary;
+  generatedAt: string;
+}
+
+export interface DetectionBulkToggleResult {
+  updated: number;
+  /** Rule IDs the backend refused (not tenant-owned, malformed, missing). */
+  skipped: string[];
+}
+
 export const detectionApi = {
   list: () =>
     request<{ rules: DetectionRule[]; total: number }>(
@@ -2112,6 +2176,24 @@ export const detectionApi = {
         body: JSON.stringify(rule),
       },
     ),
+
+  // ─── WS-B3 management endpoints ──────────────────────────────────────────
+
+  coverage: () =>
+    request<DetectionCoverage>('/api/v1/detection/coverage'),
+
+  drift: () => request<DetectionDrift>('/api/v1/detection/drift'),
+
+  /**
+   * Enable or disable many rules in one round-trip. Built-in /
+   * cross-tenant rules are silently skipped server-side and reported in
+   * the ``skipped`` array of the response so the UI can surface them.
+   */
+  bulkToggle: (ruleIds: string[], enabled: boolean) =>
+    request<DetectionBulkToggleResult>('/api/v1/detection/rules/bulk-toggle', {
+      method: 'POST',
+      body: JSON.stringify({ ruleIds, enabled }),
+    }),
 };
 
 // ─── Detection-as-code proposals (Wave 2 — w2-dac) ──────────────────────────
