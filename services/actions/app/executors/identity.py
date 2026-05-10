@@ -15,7 +15,7 @@ from datetime import datetime
 import structlog
 
 from app.clients.okta_client import OktaClient
-from app.executors.base import BaseExecutor, _SIM_FUNNEL_CTA
+from app.executors.base import _SIM_FUNNEL_CTA, BaseExecutor
 from app.models.action import ActionRequest, ActionResult, ActionStatus, BlastRadius
 
 logger = structlog.get_logger()
@@ -75,10 +75,7 @@ class DisableUserExecutor(BaseExecutor):
             output={
                 "action": "disable_user",
                 "user": user_id,
-                "note": (
-                    "Simulation mode — provide okta_domain and okta_api_token to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide okta_domain and okta_api_token to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={"user_id": user_id},
             completed_at=datetime.utcnow(),
@@ -139,10 +136,7 @@ class ResetPasswordExecutor(BaseExecutor):
                 "action": "reset_password",
                 "user": user_id,
                 "send_email": send_email,
-                "note": (
-                    "Simulation mode — provide okta_domain and okta_api_token to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide okta_domain and okta_api_token to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={"user_id": user_id},
             completed_at=datetime.utcnow(),
@@ -204,10 +198,7 @@ class SuspendSessionExecutor(BaseExecutor):
             output={
                 "action": "suspend_session",
                 "user": user_id,
-                "note": (
-                    "Simulation mode — provide okta_domain and okta_api_token to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide okta_domain and okta_api_token to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={"user_id": user_id},
             completed_at=datetime.utcnow(),
@@ -266,10 +257,7 @@ class ForceMFAExecutor(BaseExecutor):
             output={
                 "action": "force_mfa",
                 "user": user_id,
-                "note": (
-                    "Simulation mode — provide okta_domain and okta_api_token to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide okta_domain and okta_api_token to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={"user_id": user_id},
             completed_at=datetime.utcnow(),

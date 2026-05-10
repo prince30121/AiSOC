@@ -1,8 +1,9 @@
 """Distributed query queue: enqueue and dequeue per-node ad-hoc queries."""
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +12,7 @@ from app.models.distributed_query import OsqueryDistributedQuery
 from app.models.node import OsqueryNode
 
 
-async def enqueue_query(
-    db: AsyncSession, node: OsqueryNode, query_text: str
-) -> OsqueryDistributedQuery:
+async def enqueue_query(db: AsyncSession, node: OsqueryNode, query_text: str) -> OsqueryDistributedQuery:
     """Add a new distributed query for the given node and return it."""
     dq = OsqueryDistributedQuery(
         node_id=node.id,
@@ -27,9 +26,7 @@ async def enqueue_query(
     return dq
 
 
-async def get_pending_queries(
-    db: AsyncSession, node: OsqueryNode
-) -> list[OsqueryDistributedQuery]:
+async def get_pending_queries(db: AsyncSession, node: OsqueryNode) -> list[OsqueryDistributedQuery]:
     """Return all pending distributed queries for this node."""
     result = await db.execute(
         select(OsqueryDistributedQuery).where(
@@ -51,20 +48,14 @@ async def complete_query(
         .where(OsqueryDistributedQuery.query_id == query_id)
         .values(
             status="completed",
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             results_json=results,
         )
     )
     await db.commit()
 
 
-async def get_query_by_id(
-    db: AsyncSession, query_id: str
-) -> OsqueryDistributedQuery | None:
+async def get_query_by_id(db: AsyncSession, query_id: str) -> OsqueryDistributedQuery | None:
     """Look up a distributed query by its query_id."""
-    result = await db.execute(
-        select(OsqueryDistributedQuery).where(
-            OsqueryDistributedQuery.query_id == query_id
-        )
-    )
+    result = await db.execute(select(OsqueryDistributedQuery).where(OsqueryDistributedQuery.query_id == query_id))
     return result.scalar_one_or_none()

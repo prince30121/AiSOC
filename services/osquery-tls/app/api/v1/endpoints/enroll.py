@@ -6,6 +6,7 @@ register the node (or rotate its node_key) and return a fresh node_key.
 Reference:
   https://osquery.readthedocs.io/en/stable/deployment/remote/#enroll
 """
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -14,7 +15,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.security import verify_enroll_secret
 from app.db.session import get_db
 from app.services.node_registry import enroll_node

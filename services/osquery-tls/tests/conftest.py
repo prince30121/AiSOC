@@ -3,14 +3,14 @@
 Uses an in-memory SQLite database for speed.  SQLite doesn't support every
 Postgres feature but it is sufficient for the ORM-level tests here.
 """
+
 from __future__ import annotations
 
 import os
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Override env before importing the app so settings resolves without secrets.
 os.environ.setdefault("AISOC_OSQUERY_TLS_ENROLL_SECRET", "test-enroll-secret")

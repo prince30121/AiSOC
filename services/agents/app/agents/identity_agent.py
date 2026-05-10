@@ -103,11 +103,22 @@ def _build_identity_context(state: InvestigationState) -> str:
     if raw.get("previous_login"):
         parts.append(f"Previous login: {json.dumps(raw['previous_login'], default=str)}")
 
-    extra_keys = {k for k in raw if k not in {
-        "severity", "risk_score", *identity_fields, "login_attempts",
-        "failed_count", *geo_fields, *priv_fields, "timestamp",
-        "previous_login",
-    }}
+    extra_keys = {
+        k
+        for k in raw
+        if k
+        not in {
+            "severity",
+            "risk_score",
+            *identity_fields,
+            "login_attempts",
+            "failed_count",
+            *geo_fields,
+            *priv_fields,
+            "timestamp",
+            "previous_login",
+        }
+    }
     if extra_keys:
         extras = {k: raw[k] for k in sorted(extra_keys)[:8]}
         parts.append(f"Additional fields: {json.dumps(extras, default=str)}")
@@ -120,7 +131,7 @@ def _parse_response(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         cleaned = "\n".join(lines).strip()
 
     try:
@@ -165,10 +176,12 @@ async def run_identity(state: InvestigationState) -> InvestigationState:
 
     t0 = time.monotonic()
     try:
-        response = await llm.ainvoke([
-            SystemMessage(content=_SYSTEM_PROMPT),
-            HumanMessage(content=context),
-        ])
+        response = await llm.ainvoke(
+            [
+                SystemMessage(content=_SYSTEM_PROMPT),
+                HumanMessage(content=context),
+            ]
+        )
         result = _parse_response(response.content)
     except Exception as exc:
         logger.error("Identity agent LLM call failed", error=str(exc))

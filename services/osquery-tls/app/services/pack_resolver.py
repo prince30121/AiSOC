@@ -9,6 +9,7 @@ Tenant pack assignments are stored in the ``OsqueryPackAssignment`` table
 assignments the resolver falls back to the curated *baseline* packs
 (aisoc-fim-baseline, aisoc-inventory-baseline).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -16,9 +17,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.pack_assignment import OsqueryPackAssignment
-from app.services.pack_loader import get_all_packs, get_pack
+from app.services.pack_loader import get_pack
 
 # ---------------------------------------------------------------------------
 # Default pack set (applied when a tenant has no assignments)
@@ -33,6 +33,7 @@ _DEFAULT_PACK_IDS: list[str] = [
 # ---------------------------------------------------------------------------
 # Sync helper (used inside config endpoint which may not yet have a DB session)
 # ---------------------------------------------------------------------------
+
 
 def _build_config(pack_ids: list[str]) -> dict[str, Any]:
     """Merge the given packs into a single osquery TLS config dict."""
@@ -62,6 +63,7 @@ def _build_config(pack_ids: list[str]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def resolve_config(tenant_id: str) -> dict[str, Any]:
     """Return the osquery TLS config JSON for the given tenant.

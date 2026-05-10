@@ -1,9 +1,10 @@
 """Initial schema: node_registry, distributed_query_queue, pack_assignment.
 
 Revision ID: 001
-Revises: 
+Revises:
 Create Date: 2026-05-10
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa

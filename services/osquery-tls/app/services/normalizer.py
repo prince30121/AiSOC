@@ -5,10 +5,11 @@ Mirrors the severity heuristics used by the osctrl and FleetDM connectors
 
 Schema reference: services/connectors/app/connectors/osctrl.py
 """
+
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _HIGH_PATTERNS = [
     re.compile(r"process_events", re.IGNORECASE),
@@ -67,5 +68,5 @@ def normalize_row(
         "log_type": log_type,
         "severity": severity,
         "raw": row,
-        "timestamp": row.get("unixTime") or datetime.now(timezone.utc).isoformat(),
+        "timestamp": row.get("unixTime") or datetime.now(UTC).isoformat(),
     }

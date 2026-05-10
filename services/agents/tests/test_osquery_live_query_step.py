@@ -4,6 +4,7 @@ Unit tests for the osquery_live_query playbook step handler.
 Tests exercise ``_handle_osquery_live_query`` directly with patched client
 classes injected via sys.modules, so no real network calls are made.
 """
+
 from __future__ import annotations
 
 import sys
@@ -12,7 +13,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Inject stub modules BEFORE importing the engine (engine does lazy imports
@@ -84,7 +84,6 @@ _inject_stubs()
 
 from app.playbook.engine import _handle_osquery_live_query  # noqa: E402
 from app.playbook.models import PlaybookStep, StepType  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers

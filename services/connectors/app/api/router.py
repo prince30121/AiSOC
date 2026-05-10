@@ -161,10 +161,7 @@ def _require_capability(cls: type, capability: Capability, connector_id: str) ->
     if capability not in cls.capabilities():
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                f"connector '{connector_id}' does not declare capability "
-                f"'{capability.value}'"
-            ),
+            detail=(f"connector '{connector_id}' does not declare capability '{capability.value}'"),
         )
 
 
@@ -249,12 +246,12 @@ async def test_connector_connection(connector_id: str, payload: TestConnectionRe
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"connector config does not match schema: {exc}",
         ) from exc
-    except Exception:  # pragma: no cover - last-ditch
+    except Exception as exc:  # pragma: no cover - last-ditch
         logger.exception("connector.test.constructor_error", connector_id=_safe_log_val(connector_id))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to construct connector. Check your configuration.",
-        )
+        ) from exc
 
     try:
         result = await connector.test_connection()
@@ -320,12 +317,12 @@ async def run_federated_query(connector_id: str, payload: FederatedQueryRequest)
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
     except QueryError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         logger.exception("connector.query.runtime_error", connector_id=_safe_log_val(connector_id))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Backend query failed. Check connector configuration and connectivity.",
-        )
+        ) from exc
 
     return {
         "connector_id": connector_id,
@@ -360,7 +357,7 @@ async def push_case(connector_id: str, payload: PushCaseRequest):
         result = await connector.push_case(payload.case)
     except NotImplementedError as exc:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         # Don't leak vendor errors verbatim — they sometimes echo request
         # headers / payload fragments. The connector logs the full detail
         # via structlog; the API service just sees a generic 502.
@@ -371,7 +368,7 @@ async def push_case(connector_id: str, payload: PushCaseRequest):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Push to external ITSM failed. Check connector configuration and connectivity.",
-        )
+        ) from exc
 
     if not isinstance(result, dict):
         raise HTTPException(
@@ -411,7 +408,7 @@ async def push_status_change(connector_id: str, payload: PushStatusChangeRequest
     except ValueError as exc:
         # e.g. servicenow.push_status_change rejecting a missing sys_id.
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "connector.push_status_change.runtime_error",
             connector_id=_safe_log_val(connector_id),
@@ -419,7 +416,7 @@ async def push_status_change(connector_id: str, payload: PushStatusChangeRequest
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Status sync to external ITSM failed. Check connector configuration and connectivity.",
-        )
+        ) from exc
 
     if not isinstance(result, dict):
         raise HTTPException(

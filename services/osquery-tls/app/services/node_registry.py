@@ -1,7 +1,8 @@
 """Node registry: enroll, look up, and refresh osquery nodes."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,15 +13,11 @@ from app.models.node import OsqueryNode
 
 async def get_node_by_key(db: AsyncSession, node_key: str) -> OsqueryNode | None:
     """Return the node with the given node_key, or None if not found."""
-    result = await db.execute(
-        select(OsqueryNode).where(OsqueryNode.node_key == node_key)
-    )
+    result = await db.execute(select(OsqueryNode).where(OsqueryNode.node_key == node_key))
     return result.scalar_one_or_none()
 
 
-async def get_node_by_host(
-    db: AsyncSession, host_identifier: str, tenant_id: str
-) -> OsqueryNode | None:
+async def get_node_by_host(db: AsyncSession, host_identifier: str, tenant_id: str) -> OsqueryNode | None:
     """Return a node by host_identifier + tenant, or None."""
     result = await db.execute(
         select(OsqueryNode).where(
@@ -42,7 +39,7 @@ async def enroll_node(
     if existing is not None:
         existing.node_key = generate_node_key()
         existing.host_details = host_details
-        existing.last_seen = datetime.now(timezone.utc)
+        existing.last_seen = datetime.now(UTC)
         await db.commit()
         await db.refresh(existing)
         return existing
@@ -52,7 +49,7 @@ async def enroll_node(
         node_key=generate_node_key(),
         tenant_id=tenant_id,
         host_details=host_details,
-        last_seen=datetime.now(timezone.utc),
+        last_seen=datetime.now(UTC),
     )
     db.add(node)
     await db.commit()
@@ -62,9 +59,5 @@ async def enroll_node(
 
 async def mark_seen(db: AsyncSession, node: OsqueryNode) -> None:
     """Update last_seen timestamp for the given node."""
-    await db.execute(
-        update(OsqueryNode)
-        .where(OsqueryNode.id == node.id)
-        .values(last_seen=datetime.now(timezone.utc))
-    )
+    await db.execute(update(OsqueryNode).where(OsqueryNode.id == node.id).values(last_seen=datetime.now(UTC)))
     await db.commit()

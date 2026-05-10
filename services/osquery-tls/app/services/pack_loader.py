@@ -8,13 +8,12 @@ The loader is imported by:
 - ``pack_resolver`` (to build per-tenant config responses)
 - The pack catalog API (to serve ``GET /v1/packs``)
 """
+
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ import yaml
 # presence of a ``packs/`` directory).  This avoids hard-coding absolute paths
 # and works whether the service is run from source or inside a container with
 # the repo mounted.
+
 
 def _find_packs_dir() -> Path:
     """Return the absolute path to the ``packs/`` directory."""
@@ -54,6 +54,7 @@ PACKS_DIR: Path = _find_packs_dir()
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PackQuery:
@@ -155,6 +156,7 @@ class OsqueryPack:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 def _parse_pack(path: Path) -> OsqueryPack:
     """Parse a single pack YAML file into an OsqueryPack instance."""

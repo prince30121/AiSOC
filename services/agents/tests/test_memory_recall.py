@@ -26,6 +26,7 @@ Metrics:
     * isolation_score — fraction of cross-tenant probes that return None.
       Floor: 1.0 (perfect isolation required).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,10 +44,10 @@ os.environ.setdefault("DATABASE_URL", "")
 os.environ.setdefault("REDIS_URL", "")
 
 from app.memory import MemoryManager  # noqa: E402
+from app.memory.institutional import _FALLBACK as _INSTITUTIONAL_FALLBACK  # noqa: E402
 from app.memory.models import OverrideFeedback  # noqa: E402
 from app.memory.session import _session_caches  # noqa: E402
 from app.memory.working import _FALLBACK as _WORKING_FALLBACK  # noqa: E402
-from app.memory.institutional import _FALLBACK as _INSTITUTIONAL_FALLBACK  # noqa: E402
 
 RECALL_ACCURACY_FLOOR = 1.0
 ISOLATION_FLOOR = 1.0
@@ -199,9 +200,7 @@ async def test_override_ingestion():
         reason="Confirmed C2 callback after manual PCAP review",
     )
     await mgr.ingest_override(feedback)
-    result = await mgr.recall(
-        f"analyst_override:{feedback.alert_id}", tiers=("institutional",)
-    )
+    result = await mgr.recall(f"analyst_override:{feedback.alert_id}", tiers=("institutional",))
     assert result is not None
     assert result["corrected_verdict"] == "true_positive"
     assert result["analyst_id"] == "analyst-42"

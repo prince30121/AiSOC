@@ -2,6 +2,7 @@
 
 Supports async migrations via asyncio run_sync().
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -11,9 +12,9 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import app.models as _models  # noqa: F401 — side-effect: register ORM models with metadata
 from app.core.config import settings
 from app.db.base import Base
-import app.models  # noqa: F401 — register all ORM models
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

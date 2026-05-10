@@ -19,9 +19,10 @@ for ``"secret"``) is caught at import time, not at form-render time.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from app.federated.query import UnifiedQuery
@@ -325,9 +326,7 @@ class BaseConnector(ABC):
         return ()
 
     @classmethod
-    def effective_capabilities(
-        cls, allowed: Iterable[str] | None = None
-    ) -> tuple[Capability, ...]:
+    def effective_capabilities(cls, allowed: Iterable[str] | None = None) -> tuple[Capability, ...]:
         """Intersect declared capabilities with a per-instance allowlist.
 
         The API layer calls this with the ``allowed_capabilities`` column
@@ -430,9 +429,7 @@ class BaseConnector(ABC):
         Raises:
             NotImplementedError: connector did not declare ``Capability.PUSH_CASE``.
         """
-        raise NotImplementedError(
-            f"connector '{self.connector_id}' does not implement push_case"
-        )
+        raise NotImplementedError(f"connector '{self.connector_id}' does not implement push_case")
 
     async def push_status_change(
         self,
@@ -460,6 +457,4 @@ class BaseConnector(ABC):
         Raises:
             NotImplementedError: connector did not declare ``Capability.PUSH_STATUS``.
         """
-        raise NotImplementedError(
-            f"connector '{self.connector_id}' does not implement push_status_change"
-        )
+        raise NotImplementedError(f"connector '{self.connector_id}' does not implement push_status_change")

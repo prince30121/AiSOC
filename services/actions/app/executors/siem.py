@@ -23,7 +23,7 @@ import structlog
 
 from app.clients.elastic_client import ElasticClient
 from app.clients.splunk_client import SplunkClient
-from app.executors.base import BaseExecutor, _SIM_FUNNEL_CTA
+from app.executors.base import _SIM_FUNNEL_CTA, BaseExecutor
 from app.models.action import ActionRequest, ActionResult, ActionStatus, BlastRadius
 
 logger = structlog.get_logger()
@@ -200,10 +200,7 @@ class CreateNotableEventExecutor(BaseExecutor):
                 "action": "create_notable_event",
                 "title": title,
                 "severity": severity,
-                "note": (
-                    "Simulation mode — provide splunk_url/splunk_token to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide splunk_url/splunk_token to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={},
             completed_at=datetime.utcnow(),
@@ -271,10 +268,7 @@ class SyncDetectionRuleExecutor(BaseExecutor):
             output={
                 "action": "sync_detection_rule",
                 "rule_name": rule_config.get("name"),
-                "note": (
-                    "Simulation mode — provide elastic_url/elastic_api_key/kibana_url to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide elastic_url/elastic_api_key/kibana_url to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={},
             completed_at=datetime.utcnow(),
@@ -339,10 +333,7 @@ class UpdateWatcherExecutor(BaseExecutor):
             output={
                 "action": "update_watcher",
                 "watcher_id": watcher_id,
-                "note": (
-                    "Simulation mode — provide elastic_url/elastic_api_key to enable live execution."
-                    + _SIM_FUNNEL_CTA
-                ),
+                "note": ("Simulation mode — provide elastic_url/elastic_api_key to enable live execution." + _SIM_FUNNEL_CTA),
             },
             rollback_data={"watcher_id": watcher_id},
             completed_at=datetime.utcnow(),

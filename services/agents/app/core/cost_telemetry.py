@@ -39,15 +39,16 @@ logger = structlog.get_logger()
 # agent. A contextvar lets each agent look up the tracker bound by its caller
 # (the orchestrator) without changing the graph schema.
 
-_current_tracker: contextvars.ContextVar["CostTracker | None"] = contextvars.ContextVar(
+_current_tracker: contextvars.ContextVar[CostTracker | None] = contextvars.ContextVar(
     "aisoc_cost_tracker",
     default=None,
 )
 
 
-def current_cost_tracker() -> "CostTracker | None":
+def current_cost_tracker() -> CostTracker | None:
     """Return the cost tracker bound to the current async context, if any."""
     return _current_tracker.get()
+
 
 # ---------------------------------------------------------------------------
 # Model pricing (USD per 1 k tokens, input / output)
@@ -110,9 +111,7 @@ async def _get_pool() -> Any | None:
         import asyncpg  # type: ignore[import]
 
         pool = await asyncpg.create_pool(
-            dsn.replace("postgresql+asyncpg://", "postgresql://").replace(
-                "postgres+asyncpg://", "postgresql://"
-            ),
+            dsn.replace("postgresql+asyncpg://", "postgresql://").replace("postgres+asyncpg://", "postgresql://"),
             min_size=1,
             max_size=2,
         )
@@ -156,9 +155,7 @@ async def _flush_to_db(
     # Aggregate by model
     by_model: dict[str, dict] = {}
     for r in records:
-        m = by_model.setdefault(r.model, {
-            "prompt": 0, "completion": 0, "cost": 0.0, "latency": 0.0, "calls": 0
-        })
+        m = by_model.setdefault(r.model, {"prompt": 0, "completion": 0, "cost": 0.0, "latency": 0.0, "calls": 0})
         m["prompt"] += r.prompt_tokens
         m["completion"] += r.completion_tokens
         m["cost"] += r.cost_usd
@@ -210,7 +207,7 @@ class CostTracker:
 
     _token: Any = field(default=None, init=False, repr=False)
 
-    async def __aenter__(self) -> "CostTracker":
+    async def __aenter__(self) -> CostTracker:
         # Bind into the current context so nested agents can find us.
         self._token = _current_tracker.set(self)
         return self
