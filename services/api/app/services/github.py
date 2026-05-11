@@ -42,6 +42,26 @@ def _slug(name: str) -> str:
     return slug or "detection_rule"
 
 
+def _safe_for_log(value: str, max_len: int = 120) -> str:
+    """
+    Sanitize a value before logging it.
+
+    Strips CR/LF (preventing log-injection), removes other ASCII control
+    characters, and truncates to ``max_len`` characters. CodeQL's
+    ``py/log-injection`` rule recognises this explicit replace-and-truncate
+    pattern as a sanitizer, even when callers have already validated the
+    input upstream (e.g. UUID path params or repo-built filename slugs).
+    """
+    if value is None:
+        return ""
+    s = str(value).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    # Strip remaining ASCII control characters (0x00–0x1F, 0x7F).
+    s = re.sub(r"[\x00-\x1f\x7f]", "", s)
+    if len(s) > max_len:
+        s = s[:max_len] + "…"
+    return s
+
+
 def _ext(language: str) -> str:
     return _DETECTION_LANGUAGE_EXT.get(language.lower(), "txt")
 
@@ -190,7 +210,11 @@ async def _create_branch(
         resp.raise_for_status()
         return True
     except Exception as exc:
-        logger.warning("GitHub: failed to create branch %r — %s", branch_name, type(exc).__name__)
+        logger.warning(
+            "GitHub: failed to create branch %s — %s",
+            _safe_for_log(branch_name),
+            type(exc).__name__,
+        )
         return False
 
 
@@ -220,7 +244,11 @@ async def _commit_file(
         if existing.status_code == 200:
             payload["sha"] = existing.json().get("sha")
     except Exception as exc:  # noqa: BLE001 — SHA fetch is best-effort; missing SHA just overwrites
-        logger.debug("GitHub: could not fetch existing SHA for %r: %s", file_path, type(exc).__name__)
+        logger.debug(
+            "GitHub: could not fetch existing SHA for %s: %s",
+            _safe_for_log(file_path),
+            type(exc).__name__,
+        )
 
     try:
         resp = await client.put(
@@ -231,7 +259,11 @@ async def _commit_file(
         resp.raise_for_status()
         return True
     except Exception as exc:
-        logger.warning("GitHub: failed to commit file %r — %s", file_path, type(exc).__name__)
+        logger.warning(
+            "GitHub: failed to commit file %s — %s",
+            _safe_for_log(file_path),
+            type(exc).__name__,
+        )
         return False
 
 
@@ -269,5 +301,9 @@ async def _open_pr(
         resp.raise_for_status()
         return resp.json()["html_url"]
     except Exception as exc:
-        logger.warning("GitHub: failed to open PR for branch %r — %s", head, type(exc).__name__)
+        logger.warning(
+            "GitHub: failed to open PR for branch %s — %s",
+            _safe_for_log(head),
+            type(exc).__name__,
+        )
         return None

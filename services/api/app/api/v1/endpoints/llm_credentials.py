@@ -356,11 +356,16 @@ async def upsert_llm_credential(
             type(exc).__name__,
         )
 
+    # ``payload.provider`` is a Pydantic ``LlmProvider`` Literal, so it can only
+    # ever be one of a small fixed set of strings. Sanitize defensively at the
+    # log boundary to satisfy CodeQL's ``py/log-injection`` rule, which flags
+    # any user-supplied attribute reaching ``logger.*``.
+    safe_provider = str(payload.provider).replace("\n", " ").replace("\r", " ")[:32]
     logger.info(
         "settings.llm.upsert",
         extra={
             "tenant": str(current_user.tenant_id),
-            "provider": payload.provider,
+            "provider": safe_provider,
             "rotated": rotated,
             "created": existing is None,
         },

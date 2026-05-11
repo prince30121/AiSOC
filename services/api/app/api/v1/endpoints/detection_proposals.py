@@ -781,9 +781,13 @@ async def promote_proposal(
     except Exception as exc:  # noqa: BLE001 — log and continue, never block promotion
         import logging as _logging
 
+        # ``proposal_id`` is a FastAPI-validated UUID path param, but we still
+        # strip CR/LF defensively so CodeQL's ``py/log-injection`` rule sees an
+        # explicit sanitization step at the log boundary.
+        safe_proposal_id = str(proposal_id).replace("\n", " ").replace("\r", " ")[:64]
         _logging.getLogger(__name__).warning(
-            "WS-B4: GitHub PR creation failed for proposal %r — %s",
-            str(proposal_id),
+            "WS-B4: GitHub PR creation failed for proposal %s — %s",
+            safe_proposal_id,
             type(exc).__name__,
         )
 

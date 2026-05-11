@@ -428,7 +428,7 @@ async def _record_failure(
     connectors UI surfaces the red badge and the catalog API can route
     the operator to the re-consent flow.
     """
-    new_count = (connector.oauth_refresh_failures or 0) + 1
+    new_count = int((connector.oauth_refresh_failures or 0) + 1)
     values: dict[str, Any] = {
         "oauth_refresh_failures": new_count,
         "updated_at": datetime.now(UTC),
@@ -437,14 +437,24 @@ async def _record_failure(
         values["health_status"] = _HEALTH_UNHEALTHY
         # Sanitize reason: truncate and strip any embedded newlines to prevent
         # log injection and avoid leaking sensitive OAuth error payloads.
+        # ``reason`` is always a static developer-controlled string in this
+        # module (see call sites: ``"decrypt_failed"``, ``"app_credential_missing"``,
+        # ``"http_<status>"``, ``"missing_refresh_token"``, ``"http_error_<name>"``),
+        # but we sanitize defensively in case future call sites pass through
+        # an upstream provider error payload.
         safe_reason = reason[:80].replace("\n", " ").replace("\r", " ")
+        # Bind to plain int / str locals so CodeQL's dataflow analysis can see
+        # that the values logged below are not the raw ORM-attached
+        # ``Connector`` (which holds an encrypted ``auth_config`` blob).
+        log_failures: int = int(new_count)
+        log_connector_type: str = str(connector.connector_type or "")
         logger.error(
             "oauth_refresh.alarm connector_id=%s tenant=<redacted>"
             " connector_type=%s failures=%d reason=%s"
             " — flipping health_status=unhealthy",
             connector.id,
-            connector.connector_type,
-            new_count,
+            log_connector_type,
+            log_failures,
             safe_reason,
         )
 

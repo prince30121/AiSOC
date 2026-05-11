@@ -237,6 +237,5 @@ def get_pack(pack_id: str) -> OsqueryPack | None:
 
 def invalidate_cache() -> None:
     """Force a reload on the next call (useful for tests)."""
-    global _CACHE, _CACHE_TS
-    _CACHE = {}
-    _CACHE_TS = 0.0
+    _cache_state["packs"] = {}
+    _cache_state["ts"] = 0.0

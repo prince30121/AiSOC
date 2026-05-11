@@ -195,7 +195,11 @@ class TestAirgapBlocks:
         resolver = _import_resolver()
         blocked, reason = resolver._airgap_blocks("https://api.openai.com/v1")
         assert blocked is True
-        assert "api.openai.com" in reason
+        # Match the full literal reason from ``_airgap_blocks`` rather than a
+        # bare hostname substring (avoids CodeQL's
+        # ``py/incomplete-url-substring-sanitization`` heuristic, which fires on
+        # any ``"api.openai.com" in <str>`` check even in test assertions).
+        assert reason == "AISOC_AIRGAPPED is on and base_url points at api.openai.com."
 
     def test_airgap_allows_private_litellm_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AISOC_AIRGAPPED", "true")
@@ -366,7 +370,10 @@ class TestResolveNoTenant:
         resolver = _import_resolver()
         cfg = await resolver.resolve_llm_config(None)
         assert cfg.allowed is False
-        assert "api.openai.com" in cfg.reason
+        # See note in ``test_airgap_blocks_openai_host``: assert against the full
+        # literal reason to avoid CodeQL's
+        # ``py/incomplete-url-substring-sanitization`` false positive.
+        assert cfg.reason == "AISOC_AIRGAPPED is on and base_url points at api.openai.com."
 
     @pytest.mark.asyncio
     async def test_airgap_allows_private_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -718,4 +725,7 @@ class TestAirgapWithTenantOverride:
         resolver = _import_resolver()
         cfg = await resolver.resolve_llm_config("tenant-a")
         assert cfg.allowed is False
-        assert "api.openai.com" in cfg.reason
+        # See note in ``test_airgap_blocks_openai_host``: assert against the full
+        # literal reason to avoid CodeQL's
+        # ``py/incomplete-url-substring-sanitization`` false positive.
+        assert cfg.reason == "AISOC_AIRGAPPED is on and base_url points at api.openai.com."
