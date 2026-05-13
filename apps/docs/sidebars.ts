@@ -50,6 +50,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "Architecture",
       items: [
+        "architecture/agents",
         "architecture/graph-schema",
         "architecture/itsm-as-source-of-truth",
       ],
