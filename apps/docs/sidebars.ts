@@ -29,6 +29,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Console",
+      items: ["console/queue", "console/rule-tuning"],
+    },
+    {
+      type: "category",
       label: "Architecture",
       items: ["architecture/itsm-as-source-of-truth"],
     },

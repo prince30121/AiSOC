@@ -353,6 +353,83 @@ paths:
                 $ref: '#/components/schemas/AlertStatsResponse'
       security:
       - HTTPBearer: []
+  /api/v1/alerts/queue:
+    get:
+      tags:
+      - alerts
+      summary: Get Alert Queue
+      description: 'Investigation Queue workbench feed.
+
+
+        Returns the prioritised list of alerts the analyst should work on
+
+        next: alerts assigned to them, followed by unassigned
+
+        critical/high alerts, ordered by SLA due time.
+
+
+        The endpoint also returns ``counts`` for both buckets unconditionally
+
+        so the topbar badge and the workbench tabs can render without an
+
+        extra round-trip.'
+      operationId: get_alert_queue_api_v1_alerts_queue_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: owner
+        in: query
+        required: false
+        schema:
+          enum:
+          - me
+          - unassigned
+          - all
+          type: string
+          default: all
+          title: Owner
+      - name: period
+        in: query
+        required: false
+        schema:
+          enum:
+          - 24h
+          - 7d
+          - 30d
+          - all
+          type: string
+          default: all
+          title: Period
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/alerts/{alert_id}:
     get:
       tags:
@@ -425,6 +502,43 @@ paths:
       summary: Escalate Alert
       description: Escalate an alert (raises severity by one level).
       operationId: escalate_alert_api_v1_alerts__alert_id__escalate_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: alert_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Alert Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/alerts/{alert_id}/claim:
+    post:
+      tags:
+      - alerts
+      summary: Claim Alert Endpoint
+      description: 'Atomically claim an unassigned alert for the current user.
+
+
+        Returns ``409 Conflict`` if the alert is already assigned to someone
+
+        else — the claim is a compare-and-set on ``assigned_to_id``, so two
+
+        analysts racing for the same alert never both win.'
+      operationId: claim_alert_endpoint_api_v1_alerts__alert_id__claim_post
       security:
       - HTTPBearer: []
       parameters:
@@ -3047,6 +3161,253 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProposalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/detection/tuning:
+    get:
+      tags:
+      - detection
+      summary: Get Tuning Workbench
+      description: 'Project every rule the tenant can tune into a workbench feed.
+
+
+        The summary block is computed across the *entire classified population*
+
+        (not the current page), so the header tiles stay stable as analysts page.
+
+        Dismissed rules are excluded by default — pass ``include_dismissed=true``
+
+        when auditing what''s been hidden.'
+      operationId: get_tuning_workbench_api_v1_detection_tuning_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: severity
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by rule severity (info/low/medium/high/critical).
+          title: Severity
+        description: Filter by rule severity (info/low/medium/high/critical).
+      - name: suggestion
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - disable
+            - add_suppression
+            - raise_threshold
+            - tune_confidence
+            - review_stale
+            - healthy
+            type: string
+          - type: 'null'
+          description: Filter to a single suggestion lane.
+          title: Suggestion
+        description: Filter to a single suggestion lane.
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          description: Substring match on name/description/category.
+          title: Search
+        description: Substring match on name/description/category.
+      - name: enabled_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Hide rules whose status != 'active'.
+          default: false
+          title: Enabled Only
+        description: Hide rules whose status != 'active'.
+      - name: include_dismissed
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Show rules previously dismissed from the workbench.
+          default: false
+          title: Include Dismissed
+        description: Show rules previously dismissed from the workbench.
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuningResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/detection/tuning/summary:
+    get:
+      tags:
+      - detection
+      summary: Get Tuning Summary
+      description: 'Cheap summary-only endpoint for sidebar badges and the
+
+        /console dashboard tile.'
+      operationId: get_tuning_summary_api_v1_detection_tuning_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuningSummary'
+      security:
+      - HTTPBearer: []
+  /api/v1/detection/tuning/{rule_id}/apply:
+    post:
+      tags:
+      - detection
+      summary: Apply Tuning Endpoint
+      description: 'Mechanically apply a tuning suggestion to a single rule.
+
+
+        Supports ``raise_threshold``, ``add_suppression``, ``disable``, and
+
+        ``acknowledge`` (no-op + audit). Every mutation bumps
+
+        ``DetectionRule.version`` and writes a ``detection.tuning.apply`` audit
+
+        log entry. Returns the re-projected entry so the UI can refresh in place.'
+      operationId: apply_tuning_endpoint_api_v1_detection_tuning__rule_id__apply_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyTuningRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuningEntry'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/detection/tuning/{rule_id}/dismiss:
+    post:
+      tags:
+      - detection
+      summary: Dismiss Tuning Endpoint
+      description: Hide a rule from the default workbench view without changing semantics.
+      operationId: dismiss_tuning_endpoint_api_v1_detection_tuning__rule_id__dismiss_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DismissTuningRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuningEntry'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/detection/tuning/{rule_id}/auto_tune:
+    post:
+      tags:
+      - detection
+      summary: Set Auto Tune Endpoint
+      description: 'Flip the per-rule ``auto_tune`` opt-in flag.
+
+
+        The flag is stored under ``suppression_config.auto_tune`` and is read by
+
+        future automated tuners — flipping it does *not* trigger any immediate
+
+        rule mutation.'
+      operationId: set_auto_tune_endpoint_api_v1_detection_tuning__rule_id__auto_tune_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: rule_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Rule Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoTuneRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TuningEntry'
         '422':
           description: Validation Error
           content:
@@ -12372,6 +12733,41 @@ components:
       - last_used_at
       - created_at
       title: ApiKeyOut
+    ApplyTuningRequest:
+      properties:
+        action:
+          type: string
+          enum:
+          - raise_threshold
+          - add_suppression
+          - disable
+          - acknowledge
+          title: Action
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        threshold:
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Threshold
+          description: Override threshold to set when action='raise_threshold'.
+        suppression_reason:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Suppression Reason
+          description: Free-text reason recorded with the suppression placeholder.
+      type: object
+      required:
+      - action
+      title: ApplyTuningRequest
+      description: Body for ``POST /detection/tuning/{rule_id}/apply``.
     ApprovalCreateRequest:
       properties:
         run_id:
@@ -13162,6 +13558,16 @@ components:
       - access_token
       - refresh_token
       title: AuthenticateFinishResponse
+    AutoTuneRequest:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: AutoTuneRequest
+      description: Body for ``POST /detection/tuning/{rule_id}/auto_tune``.
     AutonomyPolicyResponse:
       properties:
         tenant_id:
@@ -15322,6 +15728,17 @@ components:
       required:
       - discovered
       title: DiscoverResponse
+    DismissTuningRequest:
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Reason
+      type: object
+      title: DismissTuningRequest
+      description: Body for ``POST /detection/tuning/{rule_id}/dismiss``.
     DriftEntry:
       properties:
         ruleId:
@@ -19708,6 +20125,224 @@ components:
       - rows
       - total_rows
       title: QueryResult
+    QueueAction:
+      properties:
+        priority:
+          type: integer
+          title: Priority
+        action:
+          type: string
+          title: Action
+        risk:
+          type: string
+          title: Risk
+          default: low
+      type: object
+      required:
+      - priority
+      - action
+      title: QueueAction
+      description: 'Top suggested next action for a queue row.
+
+
+        Sourced from ``Alert.ai_recommendations``. The lowest-priority
+
+        integer wins (1 = most urgent). String-only legacy values are
+
+        accepted and mapped to ``risk="low"`` with the array index as a
+
+        fallback priority.'
+    QueueAsset:
+      properties:
+        kind:
+          type: string
+          title: Kind
+          description: host | user | ip | asset
+        value:
+          type: string
+          title: Value
+        label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Label
+      type: object
+      required:
+      - kind
+      - value
+      title: QueueAsset
+      description: 'Lightweight asset descriptor for a queue row.
+
+
+        The queue surfaces *one* representative entity per alert so the
+
+        row is informative at a glance ("VPN brute force on `web-01`")
+
+        without enumerating every entity. The full pivotable list lives
+
+        on the Investigation Rail when the analyst opens the alert.'
+    QueueItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        tenant_id:
+          type: string
+          format: uuid
+          title: Tenant Id
+        title:
+          type: string
+          title: Title
+        severity:
+          type: string
+          title: Severity
+        status:
+          type: string
+          title: Status
+        priority:
+          type: integer
+          title: Priority
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        connector_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Connector Type
+        assigned_to_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Assigned To Id
+        case_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Case Id
+        first_seen:
+          type: string
+          format: date-time
+          title: First Seen
+        sla_due_at:
+          type: string
+          format: date-time
+          title: Sla Due At
+        sla_remaining_seconds:
+          type: integer
+          title: Sla Remaining Seconds
+        sla_breached:
+          type: boolean
+          title: Sla Breached
+        age_seconds:
+          type: integer
+          title: Age Seconds
+        asset:
+          anyOf:
+          - $ref: '#/components/schemas/QueueAsset'
+          - type: 'null'
+        suggested_action:
+          anyOf:
+          - $ref: '#/components/schemas/QueueAction'
+          - type: 'null'
+        bucket:
+          type: string
+          enum:
+          - mine
+          - unassigned
+          title: Bucket
+      type: object
+      required:
+      - id
+      - tenant_id
+      - title
+      - severity
+      - status
+      - priority
+      - first_seen
+      - sla_due_at
+      - sla_remaining_seconds
+      - sla_breached
+      - age_seconds
+      - bucket
+      title: QueueItem
+      description: 'One row in the Investigation Queue workbench.
+
+
+        Intentionally slimmer than ``AlertResponse``. The queue exists to
+
+        answer "what should I work on next?" — clicking a row navigates
+
+        to ``/alerts/{id}`` which loads full detail via the existing
+
+        detail endpoint (``GET /alerts/{id}``). Keeping this payload
+
+        small means a busy SOC with thousands of open alerts can refresh
+
+        the queue cheaply (the badge on the topbar polls it).'
+    QueueResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/QueueItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        period:
+          type: string
+          title: Period
+        owner:
+          type: string
+          title: Owner
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        pages:
+          type: integer
+          title: Pages
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+      type: object
+      required:
+      - items
+      - total
+      - counts
+      - period
+      - owner
+      - page
+      - page_size
+      - pages
+      - generated_at
+      title: QueueResponse
+      description: 'Paginated queue response.
+
+
+        ``counts`` always reports both buckets so the workbench can
+
+        render the "mine / unassigned / all" tabs without re-fetching.
+
+        ``generated_at`` is the server-side ``now`` we used to compute
+
+        SLA remaining — the frontend can drift its own clock from this
+
+        so multiple analysts on different boxes see the same countdowns.'
     RatingIn:
       properties:
         score:
@@ -22281,6 +22916,232 @@ components:
       - fix_steps
       title: TroubleshootResponse
       description: Structured guidance the wizard renders next to a failed test.
+    TuningEntry:
+      properties:
+        rule_id:
+          type: string
+          title: Rule Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        category:
+          type: string
+          title: Category
+        severity:
+          type: string
+          title: Severity
+        status:
+          type: string
+          title: Status
+        enabled:
+          type: boolean
+          title: Enabled
+        confidence:
+          type: integer
+          title: Confidence
+        fp_rate:
+          type: number
+          title: Fp Rate
+        total_hits:
+          type: integer
+          title: Total Hits
+        last_triggered_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Triggered At
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+        mitre_tactics:
+          items:
+            type: string
+          type: array
+          title: Mitre Tactics
+        mitre_techniques:
+          items:
+            type: string
+          type: array
+          title: Mitre Techniques
+        version:
+          type: integer
+          title: Version
+        updated_at:
+          type: string
+          title: Updated At
+        suggestion:
+          type: string
+          enum:
+          - disable
+          - add_suppression
+          - raise_threshold
+          - tune_confidence
+          - review_stale
+          - healthy
+          title: Suggestion
+        score:
+          type: integer
+          title: Score
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        auto_tune:
+          type: boolean
+          title: Auto Tune
+          default: false
+        dismissed_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dismissed At
+        last_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Action
+        last_action_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Action At
+      type: object
+      required:
+      - rule_id
+      - name
+      - category
+      - severity
+      - status
+      - enabled
+      - confidence
+      - fp_rate
+      - total_hits
+      - version
+      - updated_at
+      - suggestion
+      - score
+      title: TuningEntry
+      description: One row in the tuning workbench — what an analyst sees.
+    TuningFilters:
+      properties:
+        severity:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Severity
+        suggestion:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Suggestion
+        search:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+        enabled_only:
+          type: boolean
+          title: Enabled Only
+          default: false
+        include_dismissed:
+          type: boolean
+          title: Include Dismissed
+          default: false
+        page:
+          type: integer
+          title: Page
+          default: 1
+        page_size:
+          type: integer
+          title: Page Size
+          default: 50
+      type: object
+      title: TuningFilters
+      description: Echo of the filters that built this response (handy for the UI).
+    TuningResponse:
+      properties:
+        entries:
+          items:
+            $ref: '#/components/schemas/TuningEntry'
+          type: array
+          title: Entries
+        summary:
+          $ref: '#/components/schemas/TuningSummary'
+        filters:
+          $ref: '#/components/schemas/TuningFilters'
+        total:
+          type: integer
+          title: Total
+        generated_at:
+          type: string
+          title: Generated At
+      type: object
+      required:
+      - entries
+      - summary
+      - filters
+      - total
+      - generated_at
+      title: TuningResponse
+      description: Wire shape for ``GET /detection/tuning``.
+    TuningSummary:
+      properties:
+        total_rules:
+          type: integer
+          title: Total Rules
+        actionable:
+          type: integer
+          title: Actionable
+        healthy:
+          type: integer
+          title: Healthy
+        disable_count:
+          type: integer
+          title: Disable Count
+          default: 0
+        add_suppression_count:
+          type: integer
+          title: Add Suppression Count
+          default: 0
+        raise_threshold_count:
+          type: integer
+          title: Raise Threshold Count
+          default: 0
+        tune_confidence_count:
+          type: integer
+          title: Tune Confidence Count
+          default: 0
+        review_stale_count:
+          type: integer
+          title: Review Stale Count
+          default: 0
+        auto_tune_enabled:
+          type: integer
+          title: Auto Tune Enabled
+          default: 0
+        average_fp_rate:
+          type: number
+          title: Average Fp Rate
+          default: 0.0
+        high_fp_count:
+          type: integer
+          title: High Fp Count
+          default: 0
+      type: object
+      required:
+      - total_rules
+      - actionable
+      - healthy
+      title: TuningSummary
+      description: Top-line counts for the workbench header.
     UpdateApiKeyRequest:
       properties:
         name:

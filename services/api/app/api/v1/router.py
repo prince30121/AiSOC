@@ -55,6 +55,7 @@ from app.api.v1.endpoints import (
     rbac,
     remediation,
     reports,
+    rule_tuning,
     saved_views,
     shifts,
     sla,
@@ -84,6 +85,12 @@ api_router.include_router(detection_rules.router)
 # Frontend-shape facade: /api/v1/detection/rules + /api/v1/detection/test
 api_router.include_router(detection_compat.router)
 api_router.include_router(detection_proposals.router)
+# Detection rule tuning workbench — PR-6 (W8) v1.5 console plan.
+# /detection/tuning projects every rule into actionable suggestions
+# (disable / suppress / raise_threshold / tune_confidence / review_stale)
+# scored from rule.fp_rate + total_hits + confidence + last_triggered.
+# Mutations stamp suppression_config and write detection.tuning.* audit log.
+api_router.include_router(rule_tuning.router)
 api_router.include_router(federated.router)
 api_router.include_router(graph.router)
 api_router.include_router(playbooks.router)

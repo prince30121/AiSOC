@@ -535,6 +535,147 @@ export const alertsApi = {
     }),
 };
 
+// ─── Investigation Queue (W7) ───────────────────────────────────────────────
+//
+// The Investigation Queue is the analyst's working surface: one ranked list
+// of "what should I work on next?" sourced from the canonical alerts table.
+// The backend computes a virtual ``sla_due_at`` per row (``first_seen +
+// mttd_target`` for the alert's severity) and orders the queue by
+//
+//   1. assignment bucket (mine before unassigned), and
+//   2. ``sla_due_at`` ascending within each bucket.
+//
+// Snoozed and closed alerts are excluded server-side. Unassigned ``medium``
+// and below are also excluded — those are triaged in bulk on /alerts, not
+// one-by-one on the queue. See ``services/api/app/services/alert_queue.py``
+// for the full contract.
+
+export type QueueOwner = 'me' | 'unassigned' | 'all';
+export type QueuePeriod = '24h' | '7d' | '30d' | 'all';
+export type QueueBucket = 'mine' | 'unassigned';
+export type QueueRisk = 'low' | 'medium' | 'high';
+
+export interface QueueAsset {
+  /** ``host`` | ``user`` | ``ip`` | ``asset`` — chosen by the backend. */
+  kind: string;
+  value: string;
+  label?: string | null;
+}
+
+export interface QueueAction {
+  /** 1-indexed priority; lower is more urgent. */
+  priority: number;
+  action: string;
+  risk: QueueRisk;
+}
+
+export interface QueueItem {
+  id: string;
+  tenant_id: string;
+  title: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  priority: number;
+  category?: string | null;
+  connector_type?: string | null;
+
+  assigned_to_id?: string | null;
+  case_id?: string | null;
+
+  first_seen: string;
+  sla_due_at: string;
+  /** Seconds until ``sla_due_at`` — negative once breached. */
+  sla_remaining_seconds: number;
+  sla_breached: boolean;
+  age_seconds: number;
+
+  asset?: QueueAsset | null;
+  suggested_action?: QueueAction | null;
+
+  bucket: QueueBucket;
+}
+
+export interface QueueCounts {
+  mine: number;
+  unassigned: number;
+  all: number;
+}
+
+export interface QueueResponse {
+  items: QueueItem[];
+  total: number;
+  counts: QueueCounts;
+  period: QueuePeriod;
+  owner: QueueOwner;
+  page: number;
+  page_size: number;
+  pages: number;
+  /** Server's authoritative ``now`` — the UI drifts its countdowns from this. */
+  generated_at: string;
+}
+
+export interface QueueFilters {
+  owner?: QueueOwner;
+  period?: QueuePeriod;
+  page?: number;
+  page_size?: number;
+}
+
+export const queueApi = {
+  /**
+   * Fetch the Investigation Queue.
+   *
+   * Returns up to ``page_size`` items (capped server-side at 200) plus
+   * the live ``counts`` for all buckets — that's what the sidebar badge
+   * polls. The endpoint is cheap because the server only projects the
+   * columns the queue actually renders; do *not* fan out to ``alertsApi.get``
+   * for every row.
+   */
+  list: (filters: QueueFilters = {}) =>
+    request<QueueResponse>('/api/v1/alerts/queue', {
+      params: filters as Record<string, string | number>,
+    }),
+
+  /**
+   * Atomically claim an unassigned alert for the current user.
+   *
+   * Returns ``409`` if another analyst grabbed the row first — the UI
+   * should surface that as "claimed by Sam · refresh" rather than a
+   * generic error. Idempotent if the caller already owns the alert.
+   */
+  claim: (alertId: string) =>
+    request<Alert>(`/api/v1/alerts/${alertId}/claim`, {
+      method: 'POST',
+    }),
+
+  /**
+   * Reassign or unassign an alert. Pass ``assignee = null`` to release.
+   *
+   * Reuses the existing ``PATCH /alerts/{id}`` endpoint — the server
+   * already accepts ``assignee`` updates. We add a thin wrapper here so
+   * the queue view doesn't have to re-derive the URL.
+   */
+  assign: (alertId: string, assignee: string | null) =>
+    request<Alert>(`/api/v1/alerts/${alertId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ assignee }),
+    }),
+
+  /**
+   * Snooze an alert for ``duration_minutes`` (1 → 43200 / 30d) or until
+   * a specific timestamp. The alert re-enters the queue automatically
+   * once ``snoozed_until`` passes.
+   */
+  snooze: (
+    alertId: string,
+    body: { duration_minutes?: number; until?: string; reason?: string },
+  ) =>
+    request<Alert>(`/api/v1/alerts/${alertId}/snooze`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
 // ─── Risk-Based Alerting (entity rollup) ─────────────────────────────────────
 //
 // Wave 1 of the AiSOC v6 capability roadmap: alerts contribute time-decayed
@@ -2811,6 +2952,187 @@ export const detectionProposalsApi = {
     ),
 };
 
+// ─── Detection Rule Tuning Workbench (PR-6 / v1.5 §W8) ───────────────────────
+//
+// The tuning workbench replaces the static /noise-tuning prototype with a live
+// projection of ``DetectionRule`` rows into analyst-actionable suggestions.
+// The backend is intentionally cheap — every projection is derived from
+// already-materialised fields (``fp_rate``, ``total_hits``, ``confidence``,
+// ``last_triggered``, ``status``) so a tenant with thousands of imported Sigma
+// rules can still triage without hammering the alerts table.
+//
+// Three verbs ship here:
+//   • ``list`` / ``summary`` — read-only projection (``rules:read``).
+//   • ``apply`` — mechanically tighten a rule (``rules:write``), bumps version.
+//   • ``dismiss`` / ``autoTune`` — record analyst intent (``rules:write``).
+//
+// See ``services/api/app/services/rule_tuning.py`` for the authoritative
+// wire shape; the types below mirror its Pydantic models 1:1.
+
+export type TuningSuggestion =
+  | 'disable'
+  | 'add_suppression'
+  | 'raise_threshold'
+  | 'tune_confidence'
+  | 'review_stale'
+  | 'healthy';
+
+export type TuningAction =
+  | 'raise_threshold'
+  | 'add_suppression'
+  | 'disable'
+  | 'acknowledge';
+
+export interface TuningEntry {
+  rule_id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  severity: string;
+  status: string;
+  enabled: boolean;
+  confidence: number;
+  /** Materialised false-positive rate in ``[0, 1]``. */
+  fp_rate: number;
+  total_hits: number;
+  /** ISO-8601 timestamp of the rule's last hit; ``null`` if it has never fired. */
+  last_triggered_at: string | null;
+  tags: string[];
+  mitre_tactics: string[];
+  mitre_techniques: string[];
+  version: number;
+  updated_at: string;
+
+  suggestion: TuningSuggestion;
+  /** Server-side ordering weight — already sorted descending in ``entries``. */
+  score: number;
+  reasons: string[];
+  auto_tune: boolean;
+  /** Set when an analyst has dismissed the rule from the default view. */
+  dismissed_at: string | null;
+  /** Most recent tuning action applied to this rule (``raise_threshold`` …). */
+  last_action: string | null;
+  last_action_at: string | null;
+}
+
+export interface TuningSummary {
+  total_rules: number;
+  actionable: number;
+  healthy: number;
+  disable_count: number;
+  add_suppression_count: number;
+  raise_threshold_count: number;
+  tune_confidence_count: number;
+  review_stale_count: number;
+  auto_tune_enabled: number;
+  /** Average ``fp_rate`` across classified rules, ``[0, 1]``. */
+  average_fp_rate: number;
+  /** Count of rules whose ``fp_rate`` is at or above the noisy threshold. */
+  high_fp_count: number;
+}
+
+export interface TuningFilters {
+  severity: string | null;
+  suggestion: string | null;
+  search: string | null;
+  enabled_only: boolean;
+  include_dismissed: boolean;
+  page: number;
+  page_size: number;
+}
+
+export interface TuningResponse {
+  entries: TuningEntry[];
+  summary: TuningSummary;
+  /** Echo of the filters that built this response. */
+  filters: TuningFilters;
+  total: number;
+  generated_at: string;
+}
+
+export interface TuningListParams {
+  severity?: string;
+  suggestion?: TuningSuggestion;
+  search?: string;
+  enabled_only?: boolean;
+  include_dismissed?: boolean;
+  page?: number;
+  page_size?: number;
+}
+
+export interface ApplyTuningRequest {
+  action: TuningAction;
+  note?: string | null;
+  /** Override threshold to set when ``action === 'raise_threshold'``. */
+  threshold?: number | null;
+  /** Free-text reason recorded with the suppression placeholder. */
+  suppression_reason?: string | null;
+}
+
+export interface DismissTuningRequest {
+  reason?: string | null;
+}
+
+export interface AutoTuneRequest {
+  enabled: boolean;
+}
+
+export const tuningApi = {
+  /**
+   * Fetch the rule tuning workbench feed.
+   *
+   * The ``summary`` block is computed across the *entire classified
+   * population* (not the current page), so the header tiles stay stable
+   * as analysts paginate. Dismissed rules are excluded by default — pass
+   * ``include_dismissed: true`` when auditing what's been hidden.
+   */
+  list: (params: TuningListParams = {}) =>
+    request<TuningResponse>('/api/v1/detection/tuning', {
+      params: params as Record<string, string | number | boolean>,
+    }),
+
+  /**
+   * Cheap summary-only endpoint. Used by the sidebar badge and the
+   * upcoming /console dashboard tile so they don't have to fetch the
+   * full feed just to render counts.
+   */
+  summary: () => request<TuningSummary>('/api/v1/detection/tuning/summary'),
+
+  /**
+   * Mechanically apply a tuning suggestion. ``raise_threshold``,
+   * ``add_suppression``, and ``disable`` mutate the rule and bump
+   * ``DetectionRule.version``; ``acknowledge`` is a no-op + audit. The
+   * server returns the re-projected entry so the UI can refresh in place.
+   */
+  apply: (ruleId: string, body: ApplyTuningRequest) =>
+    request<TuningEntry>(`/api/v1/detection/tuning/${ruleId}/apply`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Hide a rule from the default workbench view without touching its
+   * semantics. Dismissed rules reappear with ``include_dismissed: true``.
+   */
+  dismiss: (ruleId: string, body: DismissTuningRequest = {}) =>
+    request<TuningEntry>(`/api/v1/detection/tuning/${ruleId}/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Flip the per-rule ``auto_tune`` opt-in flag. Stored under
+   * ``suppression_config.auto_tune`` so future automated tuners know
+   * they're allowed to touch the rule. Flipping does *not* trigger any
+   * immediate mutation.
+   */
+  autoTune: (ruleId: string, enabled: boolean) =>
+    request<TuningEntry>(`/api/v1/detection/tuning/${ruleId}/auto_tune`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled } satisfies AutoTuneRequest),
+    }),
+};
+
 // ─── AI Copilot ──────────────────────────────────────────────────────────────
 
 export type CopilotRole = 'user' | 'assistant' | 'system';
@@ -4100,6 +4422,7 @@ export default {
   graph: graphApi,
   detection: detectionApi,
   detectionProposals: detectionProposalsApi,
+  tuning: tuningApi,
   copilot: copilotApi,
   contextual: contextualApi,
   ledger: ledgerApi,
