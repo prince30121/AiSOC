@@ -90,6 +90,53 @@ export const API_BASES = {
 
 export const DEFAULT_TENANT_ID = TENANT_ID;
 
+// ─── Active tenant (W5 — tenant switcher) ───────────────────────────────────
+//
+// The console used to ship every request with the env-derived TENANT_ID. With
+// the tenant switcher, MSSP parents and analysts who carry credentials for
+// multiple tenants need a way to flip the `X-Tenant-Id` header at runtime.
+// We expose three building blocks the TenantContext + switcher consume:
+//
+//   - ACTIVE_TENANT_KEY:    localStorage key for the override
+//   - getActiveTenantId():  read precedence — override → cached user → env
+//   - setActiveTenantId():  persist (or clear) the override
+//
+// `request()` calls `getActiveTenantId()` on every call so a tenant flip
+// applies to the very next fetch without needing a page reload. The env var
+// `NEXT_PUBLIC_TENANT_ID` remains the floor so demo and SSR contexts keep
+// working when no user is logged in.
+
+export const ACTIVE_TENANT_KEY = 'aisoc.activeTenantId';
+
+export function getActiveTenantId(): string {
+  if (typeof window === 'undefined') return TENANT_ID;
+  try {
+    const override = window.localStorage.getItem(ACTIVE_TENANT_KEY);
+    if (override) return override;
+    const raw = window.localStorage.getItem(AUTH_USER_KEY);
+    if (raw) {
+      const user = JSON.parse(raw) as { tenant_id?: string };
+      if (user.tenant_id) return user.tenant_id;
+    }
+  } catch {
+    /* localStorage unavailable / malformed payload — fall through */
+  }
+  return TENANT_ID;
+}
+
+export function setActiveTenantId(tenantId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (tenantId) {
+      window.localStorage.setItem(ACTIVE_TENANT_KEY, tenantId);
+    } else {
+      window.localStorage.removeItem(ACTIVE_TENANT_KEY);
+    }
+  } catch {
+    /* private-mode quota errors — surface choice is in-memory only */
+  }
+}
+
 interface FetchOptions extends RequestInit {
   params?: Record<string, string | number | boolean | undefined>;
   baseUrl?: string;
@@ -124,7 +171,9 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    'X-Tenant-Id': TENANT_ID,
+    // Resolve at call-time so the tenant switcher takes effect on the very
+    // next fetch (no full page reload needed).
+    'X-Tenant-Id': getActiveTenantId(),
     ...fetchOptions.headers,
   };
 
@@ -296,6 +345,55 @@ export const authApi = {
       window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
     } catch { /* ignore */ }
     return user;
+  },
+};
+
+// ─── Tenants & MSSP ─────────────────────────────────────────────────────────
+//
+// The W5 tenant switcher needs to know:
+//   - which tenant the user is currently authenticated against
+//     (`tenants/me` — single canonical source of truth, includes display name)
+//   - what other tenants they can flip to
+//     (`mssp/children` for MSSP parents — returns *real* child tenants from
+//      the DB, not the mock list used by the parent dashboard)
+//
+// Failures are caught by the caller — the switcher gracefully degrades to a
+// single-tenant role badge when these endpoints 401/404 (e.g. a tenant user
+// who isn't an MSSP parent will not have any children but still has /me).
+
+export interface MyTenant {
+  id: string;
+  name: string;
+  // mssp_role and parent_tenant_id come from the lightweight identity
+  // endpoint and are present for any tenant (null for standalone tenants).
+  mssp_role?: 'parent' | 'child' | null;
+  parent_tenant_id?: string | null;
+}
+
+export interface ChildTenant {
+  id: string;
+  name: string;
+  mssp_role: string;
+  created_at?: string;
+}
+
+export const tenantsApi = {
+  /**
+   * Lightweight tenant identity for the SOC console TopBar.
+   *
+   * Uses `/api/v1/tenants/me/identity` (any authenticated user) instead of
+   * `/api/v1/tenants/me` (requires `settings:read`) so analyst/viewer roles
+   * can render the tenant pill and role badge without leaking plan or
+   * settings configuration.
+   */
+  async me(): Promise<MyTenant> {
+    return request<MyTenant>('/api/v1/tenants/me/identity');
+  },
+};
+
+export const msspApi = {
+  async listChildren(): Promise<ChildTenant[]> {
+    return request<ChildTenant[]>('/api/v1/mssp/children');
   },
 };
 
