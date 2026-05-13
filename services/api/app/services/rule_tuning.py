@@ -425,9 +425,7 @@ async def build_tuning(
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
 
-    stmt = select(DetectionRule).where(
-        or_(DetectionRule.tenant_id == tenant_id, DetectionRule.tenant_id.is_(None))
-    )
+    stmt = select(DetectionRule).where(or_(DetectionRule.tenant_id == tenant_id, DetectionRule.tenant_id.is_(None)))
 
     if severity:
         stmt = stmt.where(DetectionRule.severity == severity)

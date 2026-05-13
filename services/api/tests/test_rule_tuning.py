@@ -385,10 +385,9 @@ class TestBuildTuning:
         # Three urgent + two healthy rules. With page_size=2 we expect
         # the two highest-scoring rules first.
         tenant_id = uuid.uuid4()
-        rules = [
-            _StubRule(name=f"rule_{i}", fp_rate=0.6, confidence=10, total_hits=100 + i)
-            for i in range(3)
-        ] + [_StubRule(name=f"healthy_{i}", fp_rate=0.0, confidence=90) for i in range(2)]
+        rules = [_StubRule(name=f"rule_{i}", fp_rate=0.6, confidence=10, total_hits=100 + i) for i in range(3)] + [
+            _StubRule(name=f"healthy_{i}", fp_rate=0.0, confidence=90) for i in range(2)
+        ]
         db = _setup_build_db(rules)
 
         resp = await build_tuning(db, tenant_id=tenant_id, page=1, page_size=2)
@@ -459,9 +458,7 @@ class TestBuildTuning:
     async def test_actionable_suggestions_constant_is_correct(self) -> None:
         # If someone adds a new suggestion lane, they must consciously
         # decide whether it counts toward the "needs work" tile.
-        assert ACTIONABLE_SUGGESTIONS == frozenset(
-            {"disable", "add_suppression", "raise_threshold", "tune_confidence", "review_stale"}
-        )
+        assert ACTIONABLE_SUGGESTIONS == frozenset({"disable", "add_suppression", "raise_threshold", "tune_confidence", "review_stale"})
         assert "healthy" not in ACTIONABLE_SUGGESTIONS
 
 
@@ -526,9 +523,7 @@ class TestApplyTuning:
     """Each apply action must mutate the rule AND emit an audit event."""
 
     @pytest.mark.asyncio
-    async def test_raise_threshold_bumps_threshold_and_version(
-        self, _patch_audit: AsyncMock
-    ) -> None:
+    async def test_raise_threshold_bumps_threshold_and_version(self, _patch_audit: AsyncMock) -> None:
         actor = _auth_user()
         rule = _StubRule(
             tenant_id=actor.tenant_id,
@@ -628,9 +623,7 @@ class TestApplyTuning:
         assert entry.status == "disabled"
 
     @pytest.mark.asyncio
-    async def test_acknowledge_records_action_without_mutation(
-        self, _patch_audit: AsyncMock
-    ) -> None:
+    async def test_acknowledge_records_action_without_mutation(self, _patch_audit: AsyncMock) -> None:
         # Acknowledge is a no-op for the rule's *semantics* — it just
         # stamps last_action so the workbench shows "ack'd 5m ago" and
         # the analyst can re-find the row.
@@ -741,9 +734,7 @@ class TestApplyTuning:
 
 class TestDismissTuning:
     @pytest.mark.asyncio
-    async def test_dismiss_stamps_suppression_config(
-        self, _patch_audit: AsyncMock
-    ) -> None:
+    async def test_dismiss_stamps_suppression_config(self, _patch_audit: AsyncMock) -> None:
         actor = _auth_user()
         rule = _StubRule(tenant_id=actor.tenant_id, suppression_config={})
         db = _setup_mutator_db(rule)

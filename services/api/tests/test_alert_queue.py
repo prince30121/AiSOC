@@ -197,11 +197,7 @@ class TestLoadSlaTargets:
         # Only the overridden severity should change; the rest must
         # keep their defaults.
         db = MagicMock()
-        db.execute = AsyncMock(
-            return_value=_scalars_all_result(
-                [_tenant_sla_cfg("critical", 5)]
-            )
-        )
+        db.execute = AsyncMock(return_value=_scalars_all_result([_tenant_sla_cfg("critical", 5)]))
 
         targets = await load_sla_targets(db, uuid.uuid4())
 
@@ -219,11 +215,7 @@ class TestLoadSlaTargets:
         # into the result — that would break the SQL ``CASE`` (which
         # only branches on the canonical severities).
         db = MagicMock()
-        db.execute = AsyncMock(
-            return_value=_scalars_all_result(
-                [_tenant_sla_cfg("unknown_severity", 99)]
-            )
-        )
+        db.execute = AsyncMock(return_value=_scalars_all_result([_tenant_sla_cfg("unknown_severity", 99)]))
 
         targets = await load_sla_targets(db, uuid.uuid4())
 

@@ -198,12 +198,8 @@ async def load_sla_targets(
     ``mttd_target`` here because the queue's SLA timer is MTTD
     (time-to-acknowledge). MTTR and MTTC live on cases / SLA reports.
     """
-    result: dict[str, int] = {
-        sev: cfg["mttd_target"] for sev, cfg in DEFAULT_SLA_TARGETS.items()
-    }
-    rows = await db.execute(
-        select(TenantSLAConfig).where(TenantSLAConfig.tenant_id == tenant_id)
-    )
+    result: dict[str, int] = {sev: cfg["mttd_target"] for sev, cfg in DEFAULT_SLA_TARGETS.items()}
+    rows = await db.execute(select(TenantSLAConfig).where(TenantSLAConfig.tenant_id == tenant_id))
     for cfg in rows.scalars().all():
         if cfg.severity in result:
             result[cfg.severity] = cfg.mttd_target
@@ -219,13 +215,8 @@ def sla_due_at_expression(targets: dict[str, int]):
     ``info`` target so brand-new or unknown severities still produce
     a sortable value rather than ``NULL``.
     """
-    branches = [
-        (Alert.severity == sev, Alert.first_seen + literal(timedelta(minutes=mins)))
-        for sev, mins in targets.items()
-    ]
-    fallback = Alert.first_seen + literal(
-        timedelta(minutes=DEFAULT_SLA_TARGETS["info"]["mttd_target"])
-    )
+    branches = [(Alert.severity == sev, Alert.first_seen + literal(timedelta(minutes=mins))) for sev, mins in targets.items()]
+    fallback = Alert.first_seen + literal(timedelta(minutes=DEFAULT_SLA_TARGETS["info"]["mttd_target"]))
     return case(*branches, else_=fallback)
 
 
@@ -240,24 +231,16 @@ def first_asset(alert: Alert) -> QueueAsset | None:
     Rail (W6) is for. We surface one anchor so the row is meaningful
     at a glance.
     """
-    hosts = [
-        h for h in (alert.affected_hosts or []) if isinstance(h, str) and h.strip()
-    ]
+    hosts = [h for h in (alert.affected_hosts or []) if isinstance(h, str) and h.strip()]
     if hosts:
         return QueueAsset(kind="host", value=hosts[0].strip())
-    users = [
-        u for u in (alert.affected_users or []) if isinstance(u, str) and u.strip()
-    ]
+    users = [u for u in (alert.affected_users or []) if isinstance(u, str) and u.strip()]
     if users:
         return QueueAsset(kind="user", value=users[0].strip())
-    assets = [
-        a for a in (alert.affected_assets or []) if isinstance(a, str) and a.strip()
-    ]
+    assets = [a for a in (alert.affected_assets or []) if isinstance(a, str) and a.strip()]
     if assets:
         return QueueAsset(kind="asset", value=assets[0].strip())
-    ips = [
-        i for i in (alert.affected_ips or []) if isinstance(i, str) and i.strip()
-    ]
+    ips = [i for i in (alert.affected_ips or []) if isinstance(i, str) and i.strip()]
     if ips:
         return QueueAsset(kind="ip", value=ips[0].strip())
     return None
@@ -294,9 +277,7 @@ def first_action(alert: Alert) -> QueueAction | None:
             risk = str(item.get("risk") or "low").lower()
             if risk not in {"low", "medium", "high"}:
                 risk = "low"
-            candidates.append(
-                QueueAction(priority=priority, action=action, risk=risk)
-            )
+            candidates.append(QueueAction(priority=priority, action=action, risk=risk))
 
     if not candidates:
         return None
@@ -353,14 +334,8 @@ async def build_queue(
 
     # Counts: always report both buckets so the topbar badge + tabs
     # work without re-fetching.
-    mine_count = (
-        await db.execute(select(func.count()).select_from(Alert).where(mine_filter))
-    ).scalar_one()
-    unassigned_count = (
-        await db.execute(
-            select(func.count()).select_from(Alert).where(unassigned_filter)
-        )
-    ).scalar_one()
+    mine_count = (await db.execute(select(func.count()).select_from(Alert).where(mine_filter))).scalar_one()
+    unassigned_count = (await db.execute(select(func.count()).select_from(Alert).where(unassigned_filter))).scalar_one()
 
     # Bucket label: mine (0) sorts before unassigned (1).
     bucket_expr = case(
@@ -476,9 +451,7 @@ async def claim_alert(
     clause so two analysts racing for the same row can't both win —
     the second update is a no-op and we surface 409 to the loser.
     """
-    result = await db.execute(
-        select(Alert).where(Alert.id == alert_id, Alert.tenant_id == tenant_id)
-    )
+    result = await db.execute(select(Alert).where(Alert.id == alert_id, Alert.tenant_id == tenant_id))
     alert = result.scalar_one_or_none()
     if alert is None:
         raise AlertNotFoundError(str(alert_id))
@@ -503,9 +476,7 @@ async def claim_alert(
     if winner is None or winner != user_id:
         # Someone else grabbed it between our SELECT and UPDATE.
         # Re-read so the error carries the actual owner.
-        refresh = await db.execute(
-            select(Alert.assigned_to_id).where(Alert.id == alert_id)
-        )
+        refresh = await db.execute(select(Alert.assigned_to_id).where(Alert.id == alert_id))
         actual_owner = refresh.scalar_one_or_none()
         if actual_owner is None:
             raise AlertNotFoundError(str(alert_id))
