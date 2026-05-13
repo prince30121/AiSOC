@@ -118,11 +118,6 @@ api_router.include_router(metrics.router)
 # single deterministic payload (7 tiles + sparklines + delta vs the
 # preceding window) so the dashboard can render in one round trip.
 api_router.include_router(insights.router)
-# v1.5 SOC Console parity — per-stage health strip for the operator
-# dashboard. Lives at /api/v1/health/pipeline and returns the
-# ingest → normalize → fuse → correlate → alert snapshot defined in
-# endpoints/health.py.
-api_router.include_router(health.router)
 api_router.include_router(sla.router)
 api_router.include_router(investigations.router)
 # Effective permissions resolver (T3.2 — v8.0 parallel team plan).
