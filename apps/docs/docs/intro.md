@@ -10,9 +10,44 @@ auditable: every LLM prompt, tool call, evidence citation, and decision is
 recorded in a replayable Investigation Ledger, and the substrate is gated by a
 public, reproducible eval harness on every PR targeting `main` / `develop`.
 
+:::tip What's new (last 48 hours)
+
+The console is now a workbench, not a list of pages. Seven PRs in the
+**v1.5 wave** added a global [time-window selector](./console/funnel-kpis),
+tenant switcher + role badge in the topbar, a five-tier severity ladder
+with **`critical`** restored end-to-end, the [Investigation Rail](./console/investigation-rail)
+on `/alerts` (PR-4), a server-anchored
+[Investigation Queue workbench](./console/queue) (PR-5), a
+[Rule Tuning workbench](./console/rule-tuning) (PR-6),
+[operations funnel + pipeline-health KPIs](./console/funnel-kpis) (PR-7),
+and a [zero-prerequisite installer](./installation) (PR-8) that bootstraps
+Docker, Node, pnpm, and Python from a clean machine.
+
+Underneath, **v8.0 wave-1** landed the [graph-at-ingest entity store](./architecture/graph-schema)
+(Neo4j, 17 node labels / 14 edge types, written inline with Kafka
+consumption), the four-agent rebrand (`DetectAgent`, `TriageAgent`,
+`HuntAgent`, `RespondAgent` — see the [funnel KPIs](./console/funnel-kpis)
+page for the funnel stages they own), a natural-language `/hunt` surface
+that translates plain English into ES|QL / SPL / KQL, the
+[L0–L4 automation maturity model](./concepts/automation-maturity), and a
+[public weekly benchmark scoreboard](./benchmark-scoreboard) refreshed by
+CI.
+
+A simultaneous security wave fixed **12 critical/high CVE-class issues**:
+the rule-engine `eval()` RCE is gone, tenant isolation on `/hunts` and
+`/cases` is now query-layer enforced, CORS refuses to start with
+`AISOC_CORS_ORIGINS=*` in production, playbook outbound traffic goes
+through an [SSRF guard](./operations/security), plugin OCI installs verify
+signed manifests and pin image digests, audit logs are hash-chained with
+sanitized `actor_ip`, and Python CodeQL alerts on `main` are zero — see
+the [security operations page](./operations/security#static-analysis-codeql)
+for the full list.
+
+:::
+
 ## Capabilities
 
-- **Click-and-connect cloud connectors** — pick from a 50-connector catalog spanning EDR, SIEM, cloud, IAM, SaaS, VCS, network, ITSM, vuln, and email-security sources (CrowdStrike, SentinelOne, Cortex XDR, Splunk, Microsoft Sentinel, AWS Security Hub, Defender XDR, GCP Cloud Audit, GCP SCC, M365, Entra ID, Azure Activity, Google Workspace, Okta, Duo Security, Cloudflare, Tailscale, GitHub, Wiz, Snyk, Zscaler, Proofpoint, ServiceNow, Jira, 1Password, and 25 more — see [Architecture](./architecture)). Fill a schema-driven form, click `Test connection` for a live auth round-trip, and `Save & enable`. Secrets are encrypted at the application layer with a Fernet [`CredentialVault`](./operations/credentials) before they hit Postgres; an in-process APScheduler polls each enabled instance and pushes normalized OCSF events through to the ingest spine. Setup walkthroughs: [docs/connectors](./connectors).
+- **Click-and-connect cloud connectors** — pick from a **52-connector** catalog spanning EDR, SIEM, cloud, IAM, SaaS, VCS, network, ITSM, vuln, and email-security sources (CrowdStrike, SentinelOne, Cortex XDR, Splunk, Microsoft Sentinel, AWS Security Hub, Defender XDR, GCP Cloud Audit, GCP SCC, M365, Entra ID, Azure Activity, Google Workspace, Okta, Duo Security, Cloudflare, Tailscale, GitHub, Wiz, Snyk, Zscaler, Proofpoint, ServiceNow, Jira, 1Password, **Wazuh Indexer**, **auditd `file_tail`**, and 25 more — see [Architecture](./architecture)). Fill a schema-driven form, click `Test connection` for a live auth round-trip, and `Save & enable`. Secrets are encrypted at the application layer with a Fernet [`CredentialVault`](./operations/credentials) before they hit Postgres; an in-process APScheduler polls each enabled instance and pushes normalized OCSF events through to the ingest spine. Setup walkthroughs: [docs/connectors](./connectors).
 - **Investigation Ledger** — every prompt, response, evidence citation, and tool call the agent emits is logged step-by-step and replayable on each case.
 - **Public eval harness** — alert reduction (a real measurement on a fixed noisy stream) plus MITRE-tactic, investigation-completeness, and response-quality substrate self-consistency gates. Reproducible with one command and run in CI on every PR. The [eval harness page](./benchmark) documents what each suite does and does not measure.
 - **Ambient Copilot** — context-aware next-action suggestions on every alert, case, rule, and playbook page; one click runs the right agent tool with the right payload.
@@ -26,7 +61,7 @@ public, reproducible eval harness on every PR targeting `main` / `develop`.
 - **MSSP executive dashboard** — cross-tenant view with aggregated KPIs (MTTD, MTTR, SLA compliance, ARR) and per-tenant risk scoring for managed security providers.
 - **Alert noise tuning** — closed-loop dashboard driven by analyst TP/FP verdicts, with auto-tune toggles per rule and monthly noise trend visualization.
 - **Team analytics & gamification** — analyst leaderboard with sortable performance metrics, badges (MITRE Master, Speed Demon, Zero FP, Precision Strike), and team highlights feed.
-- **STIX/TAXII publishing** — bidirectional threat intel sharing with STIX 2.1 bundle creation and TAXII collection management.
+- **STIX/TAXII publishing** — bidirectional threat intel sharing with STIX 2.1 bundle creation and TAXII collection management. Optional [STIX → MISP push](./integrations/misp-push) republishes high-confidence indicators and bundles to a MISP server with `dry-run` / `health` endpoints for fail-closed staging rollouts.
 - **Automated compliance evidence** — continuous collection from connected sources across SOC 2, ISO 27001, NIST CSF, PCI-DSS, HIPAA, and DORA frameworks.
 - **AI-generated incident reports** — one-click PDF/MD export of case investigation summaries directly from the case detail view.
 - **Real-time fusion** — Kafka spine with sub-second alert ingestion, Bloom-filter dedup on 10M+ IOCs, ML scoring (LightGBM + Isolation Forest).
@@ -40,7 +75,8 @@ public, reproducible eval harness on every PR targeting `main` / `develop`.
 - **Detection drift monitoring** — scheduled ATT&CK coverage snapshots enable "delta vs. last week" tracking on the MITRE heatmap.
 - **Hunt-as-Code** — YAML hunt definitions in `hunts/` with hypothesis, indicator matching (equals/in/regex/gte/lte/exists/contains_any/iendswith), and APScheduler-driven continuous execution. Results flow to Postgres via the Hunt API.
 - **Risk-Based Alerting (RBA)** — alerts contribute time-decayed risk points to entities (user, host, IP, domain). When an entity's score crosses a configurable threshold, AiSOC promotes it to an incident with contributing alerts attached.
-- **Federated search** — translate a single query into SPL, KQL, and ES|QL and fan out to connected SIEMs. Results are merged and deduplicated.
+- **Federated search** — translate a single query into SPL, KQL, and ES|QL and fan out to connected SIEMs. Results are merged and deduplicated. A new natural-language `/hunt` surface accepts plain English and emits a deterministic template (the `HuntAgent` never writes raw queries), with saved hunts that deep-link into the [Investigation Rail](./console/investigation-rail).
+- **Live Actions dispatcher** — push real response actions to connected EDR / IAM / network surfaces (isolate host, disable account, block IP, revoke session) with HMAC-signed idempotency keys and human-approval gates on destructive actions. ([Live Actions](./concepts/live-actions))
 - **Slack ChatOps bot** — dedicated `aisoc` slash commands (`/aisoc triage`, `/aisoc approve`, `/aisoc status`, `/aisoc summary`) with interactive approval buttons and HMAC-signed callbacks. Human-in-the-loop triage without opening the console. (`services/slack-bot/`)
 - **ChatOps verification** — Slack/Teams interactive prompts with HMAC-signed callback choices (acknowledge / deny / escalate) for human-in-the-loop response actions.
 - **AI executive digest PDF** — branded A4 PDF with KPI tiles, alert-volume chart, top-rule table, and remediation summary, auto-emailed Monday 06:00 UTC via APScheduler. (`services/api/app/services/digest_pdf.py`)
@@ -89,16 +125,25 @@ See the full [Architecture](./architecture) page for the detailed service map an
 - [Glossary](./glossary) — security and AiSOC-specific terminology in one place
 - [FAQ](./operations/faq) — common questions about scope, deployment, data, and licensing
 
+### Console workbenches (v1.5)
+
+- [Investigation Rail](./console/investigation-rail) — `/alerts` two-pane workbench (PR-4)
+- [Investigation Queue](./console/queue) — `/queue` workbench with atomic claim semantics (PR-5)
+- [Rule Tuning](./console/rule-tuning) — `/detection/tuning` workbench (PR-6)
+- [Funnel KPIs & pipeline health](./console/funnel-kpis) — operations funnel + pipeline health (PR-7)
+
 ### Core concepts
 
 - [Detections](./concepts/detections)
 - [Playbooks](./concepts/playbooks) — anatomy, triggers, conditions, approvals
 - [Cases](./concepts/cases) — including the Investigation Ledger
+- [Live Actions](./concepts/live-actions) — push real response actions to connected surfaces with approvals
+- [Automation maturity (L0–L4)](./concepts/automation-maturity) — how AiSOC climbs from human-driven to fully autonomous closure
 - [Capabilities](./concepts/capabilities) — full feature inventory by tier
 
 ### Connect & extend
 
-- [Connectors](./connectors) — click-and-connect catalog with 50 cloud / SaaS / SIEM / EDR / IAM / VCS / network / ITSM / vuln / email-security sources
+- [Connectors](./connectors) — click-and-connect catalog with 52 cloud / SaaS / SIEM / EDR / IAM / VCS / network / ITSM / vuln / email-security sources, including [Wazuh Indexer](./connectors/wazuh) and [auditd `file_tail`](./connectors/auditd)
 - [MCP Integration](./integrations/mcp) — connect Claude / Cursor / Continue / Cody
 - [Plugin SDK (Python)](./plugins/python-sdk)
 - [Plugin SDK (Go)](./plugins/go-sdk)
@@ -122,5 +167,6 @@ See the full [Architecture](./architecture) page for the detailed service map an
 ### Quality & community
 
 - [Public eval harness](./benchmark) — alert reduction plus MITRE / completeness / response-quality gates
+- [Public weekly benchmark scoreboard](./benchmark-scoreboard) — community submission leaderboard refreshed weekly by CI
 - [Contributing](./contributing/dev-setup) — local dev setup
 - [Contribution guidelines](./contributing/guidelines) — branching, PR template, testing, plan files

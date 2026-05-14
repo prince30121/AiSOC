@@ -24,6 +24,79 @@ hit. The marketing `/benchmark` page now cross-links to the scoreboard for
 the full weekly history. Wet-eval rows arrive automatically once the T5.5
 weekly CI workflow lands.
 
+### Console workbench wave — v1.5 PR-1/-2/-3/-5/-6/-7/-8
+
+Turns the SOC operator surface from a list of pages into a workbench. Seven
+PRs landed in two days and together change what `/alerts`, `/queue`,
+`/detection/tuning`, and the topbar look like end-to-end. (PR-4, the
+Investigation Rail, has its own entry deeper in this section.)
+
+- **PR-1 — Global time-window selector + topbar context.** One selector at
+  the top of the console drives every page that accepts a time range
+  (Alerts, Cases, Hunts, Funnel KPIs, Pipeline Health, Detection Tuning).
+  Backed by a new `TimeWindowProvider` in `apps/web/src/components/time/`
+  with persistence in `localStorage` and URL params so any window is
+  deep-linkable. Every API client now sends `from`/`to` query params on
+  every list endpoint instead of relying on per-page defaults.
+- **PR-2 — Tenant switcher + role badge.** MSSP operators flip tenants from
+  the topbar without re-authenticating; the role badge next to the user
+  avatar makes it impossible to confuse a `viewer` session with an `admin`
+  session. New endpoint `GET /api/v1/tenants/me/identity` returns the
+  caller's effective tenant ID, accessible tenants, role, and email so the
+  client can render the switcher without leaking other-tenant rows.
+- **PR-3 — Critical severity tier.** The severity ladder is now exactly
+  five tiers: `info | low | medium | high | critical`. Vendor-native
+  criticals that previously got collapsed into `high` (Azure 5-tier, GCP
+  SCC 5-tier, GitHub `critical`, ServiceNow priority 1, AWS GuardDuty
+  ≥ 8.0, AuditD identity-destruction events, K8s `cluster-admin` bindings,
+  Tailscale tailnet lockdown failures) now map straight through in their
+  `normalize()` and surface as `critical` in the UI. Confidence
+  (`alert.confidence`, int 0–100 with band `low | medium | high`) is now
+  decoupled from severity and emitted by `services/fusion`
+  `ConfidenceScorer` — operators can sort/filter by either dimension
+  independently.
+- **PR-5 / W7 — Investigation Queue workbench.** New `/queue` page is the
+  single surface a Tier-1 analyst lives on: server-anchored SLA countdowns
+  (clock starts on the server, not the browser), atomic claim semantics
+  (`POST /api/v1/queue/{id}/claim` is transactional — two analysts can't
+  claim the same row), one-click triage actions (`acknowledge`, `assign`,
+  `escalate`, `defer`, `close-as-fp`). Server-driven; the page makes one
+  call to `/api/v1/queue` and one call per action. Docs:
+  `apps/docs/docs/console/queue.md`.
+- **PR-6 / W8 — Rule Tuning workbench.** New `/detection/tuning` page ranks
+  noisy detection rules by precision impact (`fp_volume * tier_weight`) and
+  ships one-click suppression + allow-list edits with full audit trail
+  through `audit_logs` (every edit captured with `actor`, `actor_ip`,
+  `before`, `after`, and the new H-4-hardened hash chain). Backed by
+  `GET /api/v1/detection/tuning/recommendations` +
+  `POST /api/v1/detection/tuning/apply`. Docs:
+  `apps/docs/docs/console/rule-tuning.md`.
+- **PR-7 — Operations funnel + pipeline health.** Two new endpoints land
+  together: `GET /metrics/funnel` returns the Detected → Triaged →
+  Investigated → Resolved counts plus per-stage MTTRs, and
+  `GET /health/pipeline` returns liveness for Kafka / ingest / fusion /
+  agents / connectors. The console renders these as a `FunnelKpiBar` above
+  the alerts list and a dedicated Efficiency Report on the home dashboard,
+  so SOC leads can answer "where are we losing time?" without a Grafana
+  detour. Docs: `apps/docs/docs/console/funnel-kpis.md`.
+- **PR-8 — Zero-prerequisite installer.** `install.sh` (POSIX) and
+  `install.ps1` (Windows) now bootstrap from a clean machine: they detect
+  and install Docker Engine, Docker Compose, Node.js LTS, pnpm, and Python
+  3.11 if any are missing, then run `docker compose -f docker-compose.dev.yml
+  up -d`, wait for health, seed the demo data, and print the URL. Both
+  scripts are idempotent — re-running them on a working install is a
+  no-op. A new `uninstall.sh` does a graduated teardown (containers →
+  volumes → images → installed prerequisites, with `--keep-prereqs` /
+  `--keep-data` flags). Surfaced as **Path 0** in
+  `apps/docs/docs/quickstart.md` and as the recommended installer path on
+  `tryaisoc.com`.
+
+All five PRs ship with full Vitest coverage on the new components
+(`TimeWindowProvider`, `TenantSwitcher`, `RoleBadge`, `FunnelKpiBar`,
+`QueueView`, `RuleTuningView`) and full pytest coverage on the new
+endpoints. Test suite remains green: 1 279 backend + 412 frontend tests
+pass.
+
 ### Security hardening — Batch 8: `POST /api/v1/alerts/submit`
 
 The `/alerts/submit` ingestion path was a wide-open seam — any caller with
