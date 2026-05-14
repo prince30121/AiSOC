@@ -25,9 +25,7 @@ Two reasons:
 Registration
 ------------
 The matching router-include lives in
-``services/api/app/api/v1/router.py``. Until Subagent A registers
-this module there, the endpoint will not be reachable. See the
-``# TODO(T1.4): wire graph_ws router`` marker below.
+``services/api/app/api/v1/router.py``.
 
 Permission gate
 ---------------
@@ -41,12 +39,6 @@ Failure modes
 * Auth fails → 401 close before upgrade.
 * Tenant_id missing from CurrentUser → 403.
 """
-
-# TODO(T1.4): wire graph_ws router — Subagent A is expected to add
-# ``from app.api.v1.endpoints import graph_ws`` and
-# ``api_router.include_router(graph_ws.router)`` to
-# ``services/api/app/api/v1/router.py``. The router instance below
-# already carries the ``/graph_ws`` prefix.
 
 from __future__ import annotations
 

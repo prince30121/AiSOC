@@ -31,6 +31,7 @@ from app.api.v1.endpoints import (
     feedback,
     fusion,
     graph,
+    graph_ws,
     health,
     hunts,
     identity_graph,
@@ -270,3 +271,10 @@ api_router.include_router(lake.router)
 # not been migrated to the granular admin scope yet).
 api_router.include_router(waitlist.router)
 api_router.include_router(tenant_provision.router)
+
+# Public-facing graph-update WebSocket proxy — T1.4 (v8.0 parallel team plan).
+# /graph_ws/stream authenticates the browser's session token, rebinds the
+# tenant_id from the resolved user, and proxies to the internal ingest
+# broadcaster (AISOC_INGEST_GRAPH_WS_URL). Backs the RealtimeGraph
+# Cytoscape view; gates on graph:read.
+api_router.include_router(graph_ws.router)
