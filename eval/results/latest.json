@@ -1,0 +1,386 @@
+{
+  "generated_at": "2026-05-14T05:23:11.575932+00:00",
+  "dataset": "synthetic_incidents.json (200 cases, deterministic)",
+  "suite_filter": "all",
+  "suites": {
+    "mitre_accuracy": {
+      "metric": "accuracy",
+      "value": 0.97,
+      "target": 0.8,
+      "passed": true,
+      "duration_ms": 8.5,
+      "details": {
+        "incidents": 200,
+        "correct": 194,
+        "precision": 0.7058,
+        "recall": 0.85,
+        "f1": 0.7712
+      },
+      "per_template": {
+        "metric": "macro_accuracy",
+        "value": 0.9636,
+        "target": 0.8,
+        "passed": true,
+        "template_count": 55,
+        "failing_templates": [
+          "outlook-auto-forward-rule",
+          "compromised-ci-runner"
+        ]
+      }
+    },
+    "alert_reduction": {
+      "metric": "reduction_ratio",
+      "value": 0.753,
+      "target": 0.7,
+      "passed": true,
+      "duration_ms": 18.0,
+      "details": {
+        "alerts_in": 1000,
+        "incidents_out": 247,
+        "reduction_pct": "75.3%",
+        "storm_incidents": 16
+      }
+    },
+    "investigation_completeness": {
+      "metric": "mean_keyword_coverage",
+      "value": 0.9425,
+      "target": 0.85,
+      "passed": true,
+      "duration_ms": 6.3,
+      "details": {
+        "incidents": 200,
+        "fully_covered": 134,
+        "fully_covered_pct": 0.67
+      },
+      "per_template": {
+        "metric": "macro_completeness",
+        "value": 0.9429,
+        "target": 0.8,
+        "passed": true,
+        "template_count": 55,
+        "failing_templates": []
+      }
+    },
+    "response_quality": {
+      "metric": "mean_rubric_score",
+      "value": 1.0,
+      "target": 0.8,
+      "passed": true,
+      "duration_ms": 3.1,
+      "details": {
+        "incidents": 200,
+        "criteria": {
+          "action_aligned": 1.0,
+          "severity_aware": 1.0,
+          "mitre_aligned": 1.0,
+          "evidence_grounded": 1.0,
+          "actionable": 1.0
+        }
+      },
+      "per_template": {
+        "metric": "macro_score",
+        "value": 1.0,
+        "target": 0.75,
+        "passed": true,
+        "template_count": 55,
+        "failing_templates": []
+      }
+    },
+    "hunt_corpus": {
+      "metric": "positive_scenario_catch_rate",
+      "value": 1.0,
+      "target": 1.0,
+      "passed": true,
+      "duration_ms": 15.2,
+      "details": {
+        "hunts": 5,
+        "positives_expected": 5,
+        "positives_caught": 5,
+        "negatives_expected": 5,
+        "false_positives": 0,
+        "false_positive_rate": 0.0,
+        "negative_ceiling": 0.0,
+        "orphan_incident_ids": [],
+        "misses": [],
+        "false_positive_details": [],
+        "positive_pass": true,
+        "negative_pass": true,
+        "no_orphans": true
+      }
+    },
+    "adversary_eval": {
+      "metric": "graceful_degradation_catch_rate",
+      "value": 0.475,
+      "target": 0.4,
+      "passed": true,
+      "duration_ms": 10.3,
+      "details": {
+        "incidents": 200,
+        "correct": 95,
+        "lost_all_tactics": 105,
+        "buckets": {
+          "heavy": {
+            "incidents": 93,
+            "correct": 4,
+            "accuracy": 0.043
+          },
+          "medium": {
+            "incidents": 69,
+            "correct": 55,
+            "accuracy": 0.7971
+          },
+          "light": {
+            "incidents": 38,
+            "correct": 36,
+            "accuracy": 0.9474
+          }
+        },
+        "light_floor": 0.85,
+        "heavy_ceiling": 0.5,
+        "light_pass": true,
+        "heavy_pass": true
+      }
+    },
+    "confidence_calibration": {
+      "metric": "investigation_brier_score",
+      "value": 0.0604,
+      "target": 0.18,
+      "passed": true,
+      "duration_ms": 13.7,
+      "details": {
+        "lower_is_better": true,
+        "investigation_brier": 0.0604,
+        "investigation_brier_max": 0.18,
+        "investigation_ece": 0.173,
+        "investigation_ece_max": 0.18,
+        "triage_brier": 0.0623,
+        "triage_brier_max": 0.2,
+        "triage_ece": 0.1771,
+        "triage_ece_max": 0.2,
+        "investigation_separation": 0.654,
+        "triage_separation": 0.6458,
+        "mean_confidence_positive_investigation": 0.704,
+        "mean_confidence_benign_investigation": 0.05,
+        "investigation_brier_pass": true,
+        "investigation_ece_pass": true,
+        "triage_brier_pass": true,
+        "triage_ece_pass": true
+      }
+    },
+    "memory_recall": {
+      "metric": "memory_recall_accuracy",
+      "value": 1.0,
+      "target": 1.0,
+      "passed": true,
+      "duration_ms": 1.1,
+      "details": {
+        "total_cases": 14,
+        "passed_cases": 14,
+        "failed_cases": []
+      }
+    },
+    "override_accuracy": {
+      "metric": "override_accuracy",
+      "value": 1.0,
+      "target": 1.0,
+      "passed": true,
+      "duration_ms": 2.5,
+      "details": {
+        "total_cases": 6,
+        "passed_cases": 6,
+        "failed_cases": []
+      }
+    },
+    "playbook_completion_rate": {
+      "metric": "completion_rate",
+      "value": 0.735,
+      "target": 0.5,
+      "passed": true,
+      "duration_ms": 38.1,
+      "details": {
+        "incidents": 200,
+        "covered": 147,
+        "aligned": 132,
+        "overall_completion_rate": 0.735,
+        "overall_completion_pass": true,
+        "high_critical_completion_rate_mapped": 1.0,
+        "high_critical_completion_rate_raw": 0.8122,
+        "high_critical_covered_mapped": 147,
+        "high_critical_total_mapped": 147,
+        "high_critical_floor": 0.95,
+        "high_critical_pass": true,
+        "action_alignment_rate": 0.898,
+        "action_alignment_floor": 0.85,
+        "action_alignment_pass": true,
+        "per_severity": {
+          "high": {
+            "incidents": 93,
+            "covered": 63,
+            "aligned": 55
+          },
+          "critical": {
+            "incidents": 88,
+            "covered": 84,
+            "aligned": 77
+          },
+          "medium": {
+            "incidents": 19,
+            "covered": 0,
+            "aligned": 0
+          }
+        },
+        "per_category": {
+          "account-takeover": {
+            "incidents": 27,
+            "covered": 98,
+            "aligned": 98
+          },
+          "anomalous-data": {
+            "incidents": 12,
+            "covered": 12,
+            "aligned": 8
+          },
+          "bec": {
+            "incidents": 14,
+            "covered": 45,
+            "aligned": 23
+          },
+          "brute-force": {
+            "incidents": 7,
+            "covered": 7,
+            "aligned": 7
+          },
+          "cloud-account-takeover": {
+            "incidents": 10,
+            "covered": 10,
+            "aligned": 7
+          },
+          "cloud-misconfig": {
+            "incidents": 9,
+            "covered": 66,
+            "aligned": 6
+          },
+          "container-escape": {
+            "incidents": 8,
+            "covered": 8,
+            "aligned": 8
+          },
+          "data-exfil": {
+            "incidents": 22,
+            "covered": 47,
+            "aligned": 12
+          },
+          "ddos": {
+            "incidents": 3,
+            "covered": 12,
+            "aligned": 6
+          },
+          "endpoint-isolation": {
+            "incidents": 12,
+            "covered": 12,
+            "aligned": 12
+          },
+          "ids-critical": {
+            "incidents": 6,
+            "covered": 6,
+            "aligned": 6
+          },
+          "insider-risk": {
+            "incidents": 14,
+            "covered": 34,
+            "aligned": 14
+          },
+          "lateral-movement": {
+            "incidents": 24,
+            "covered": 72,
+            "aligned": 36
+          },
+          "malware": {
+            "incidents": 8,
+            "covered": 8,
+            "aligned": 8
+          },
+          "network-containment": {
+            "incidents": 3,
+            "covered": 3,
+            "aligned": 3
+          },
+          "phishing": {
+            "incidents": 12,
+            "covered": 12,
+            "aligned": 12
+          },
+          "privilege-escalation": {
+            "incidents": 12,
+            "covered": 12,
+            "aligned": 0
+          },
+          "ransomware": {
+            "incidents": 3,
+            "covered": 15,
+            "aligned": 15
+          },
+          "supply-chain": {
+            "incidents": 13,
+            "covered": 45,
+            "aligned": 3
+          },
+          "suspicious-signin": {
+            "incidents": 9,
+            "covered": 9,
+            "aligned": 9
+          },
+          "web-compromise": {
+            "incidents": 8,
+            "covered": 8,
+            "aligned": 8
+          }
+        },
+        "orphan_templates": [],
+        "orphan_playbooks": [],
+        "no_orphan_playbooks": true,
+        "no_orphan_templates": true
+      }
+    },
+    "detection_fp_rate": {
+      "metric": "worst_per_rule_fp_rate",
+      "value": 0.0049,
+      "target": 0.05,
+      "passed": true,
+      "duration_ms": 1834.1,
+      "details": {
+        "lower_is_better": true,
+        "rules_evaluated": 816,
+        "rules_passed": 816,
+        "rules_failed": 0,
+        "mean_fpr": 0.0,
+        "worst_fpr": 0.0049,
+        "ceiling": 0.05,
+        "failing_rules_sample": []
+      }
+    }
+  },
+  "telemetry": {
+    "present": true,
+    "events": 361,
+    "sources": {
+      "azure_signin": 21,
+      "cloudtrail": 13,
+      "db_audit": 4,
+      "dns": 7,
+      "edr": 38,
+      "github_audit": 13,
+      "k8s_audit": 7,
+      "linux_auditd": 33,
+      "linux_journald": 4,
+      "m365_audit": 28,
+      "sysmon": 113,
+      "vpn": 3,
+      "web_access": 26,
+      "windows_security": 51
+    },
+    "incidents_with_telemetry": 200,
+    "path": "services/agents/tests/eval_data/synthetic_telemetry.jsonl"
+  },
+  "all_passed": true
+}
