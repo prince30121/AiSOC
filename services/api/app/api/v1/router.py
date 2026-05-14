@@ -65,9 +65,11 @@ from app.api.v1.endpoints import (
     shifts,
     sla,
     stix_taxii,
+    tenant_provision,
     tenants,
     threat_intel,
     translation,
+    waitlist,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -259,3 +261,12 @@ api_router.include_router(inbox_itsm.router)
 # allowlisted table catalog so operators (and LLM agents) can author
 # queries without column-name guesswork.
 api_router.include_router(lake.router)
+
+# Managed-instance onboarding — T6.1 (`app.aisoc.dev` beta).
+# /waitlist exposes the public signup + admin entries CRUD that feeds
+# the sales funnel; /admin/tenants promotes approved entries into live
+# tenants. Admin endpoints gate on `admin:waitlist` / `admin:tenants`
+# (falling back to `settings:write` for tenants whose RBAC rows have
+# not been migrated to the granular admin scope yet).
+api_router.include_router(waitlist.router)
+api_router.include_router(tenant_provision.router)

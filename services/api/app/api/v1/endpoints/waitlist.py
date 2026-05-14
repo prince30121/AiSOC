@@ -1,7 +1,5 @@
 """Managed-instance waitlist endpoints — T6.1.
 
-# TODO(T6.1): wire into v1 router after Subagent A's stabilization push lands.
-
 Three endpoints, one public + two admin-only:
 
 * ``POST  /v1/waitlist/signup``           — public, rate-limited per IP.

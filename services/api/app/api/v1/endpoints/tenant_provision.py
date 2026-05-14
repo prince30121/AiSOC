@@ -1,7 +1,5 @@
 """Admin tenant-provisioning endpoints — T6.1 (`app.aisoc.dev` managed beta).
 
-# TODO(T6.1): wire into v1 router after Subagent A's stabilization push lands.
-
 Exposes the bridge between the waitlist (built in commit 1 of this
 work) and the live ``tenants`` table:
 
