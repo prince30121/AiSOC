@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         "architecture",
         "benchmark",
         "benchmark-methodology",
+        "benchmark-scoreboard",
       ],
     },
     {
