@@ -32,6 +32,7 @@ from app.connectors.carbon_black import CarbonBlackConnector
 from app.connectors.chronicle import ChronicleConnector
 from app.connectors.cisco_umbrella import CiscoUmbrellaConnector
 from app.connectors.cloudflare import CloudflareConnector
+from app.connectors.cloudflare_zt import CloudflareZTConnector
 from app.connectors.confluence_audit import ConfluenceAuditConnector
 from app.connectors.cortex_xdr import CortexXDRConnector
 from app.connectors.cortex_xsiam import CortexXSIAMConnector
@@ -107,6 +108,7 @@ _CONNECTOR_CLASSES: tuple[type[BaseConnector], ...] = (
     ChronicleConnector,
     CiscoUmbrellaConnector,
     CloudflareConnector,
+    CloudflareZTConnector,
     ConfluenceAuditConnector,
     CortexXDRConnector,
     CortexXSIAMConnector,
@@ -220,6 +222,7 @@ __all__ = [
     "ChronicleConnector",
     "CiscoUmbrellaConnector",
     "CloudflareConnector",
+    "CloudflareZTConnector",
     "ConfluenceAuditConnector",
     "ConnectorSchema",
     "CortexXDRConnector",
