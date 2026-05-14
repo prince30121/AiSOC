@@ -173,12 +173,6 @@ class ApprovalTimeoutScheduler:
             if not task.done():
                 task.cancel()
         for task in list(self._timers.values()):
-            # ``asyncio.CancelledError`` is a ``BaseException`` (not an
-            # ``Exception``) on Python 3.8+, so ``suppress(Exception)``
-            # lets it propagate and tear the lifespan down with one
-            # ``CancelledError`` per pending timer. We expect cancellation
-            # here — that's the whole point of the shutdown path — so
-            # suppress it explicitly alongside any tear-down errors.
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                _ = await task
+            with contextlib.suppress(Exception):
+                await task
         self._timers.clear()
