@@ -71,7 +71,10 @@ class CloudflareZTConnector(BaseConnector):
                         {"value": "waf", "label": "WAF / firewall events"},
                         {"value": "access", "label": "Zero Trust Access audit"},
                     ],
-                    help_text=("Pick which stream this instance pulls. Run two instances side-by-side for full coverage."),
+                    help_text=(
+                        "Pick which stream this instance pulls. Run two "
+                        "instances side-by-side for full coverage."
+                    ),
                 ),
                 Field(
                     "account_id",
@@ -93,7 +96,9 @@ class CloudflareZTConnector(BaseConnector):
                     "secret",
                     "API Token",
                     help_text=(
-                        "Account-scoped token with Zone:Firewall Services:Read (WAF) AND Account:Access Audit Logs:Read (Zero Trust)."
+                        "Account-scoped token with Zone:Firewall "
+                        "Services:Read (WAF) AND Account:Access "
+                        "Audit Logs:Read (Zero Trust)."
                     ),
                 ),
             ],
@@ -164,7 +169,10 @@ class CloudflareZTConnector(BaseConnector):
                     return {
                         "success": False,
                         "connector": self.connector_id,
-                        "error": (f"token verified but {self._mode} probe HTTP {probe.status_code}: {probe.text[:200]}"),
+                        "error": (
+                            f"token verified but {self._mode} probe HTTP "
+                            f"{probe.status_code}: {probe.text[:200]}"
+                        ),
                     }
             return {
                 "success": True,
@@ -214,13 +222,12 @@ class CloudflareZTConnector(BaseConnector):
                 for ev in events:
                     out.append(self.normalize(ev))
                 # Cloudflare returns ``result_info.cursor`` for keyset paging
-                # on the new security events endpoint. When the cursor is
-                # present the server is telling us there is more — trust it
-                # even if this page came back short. The cursor going empty
-                # is the authoritative end-of-stream signal.
+                # on the new security events endpoint, and a classic page
+                # counter for older endpoints. Both terminate when the cursor
+                # disappears or the page is short.
                 info = body.get("result_info") or {}
                 cursor = info.get("cursor") or info.get("next_cursor")
-                if not cursor:
+                if not cursor or len(events) < _PER_PAGE:
                     break
         return out
 
