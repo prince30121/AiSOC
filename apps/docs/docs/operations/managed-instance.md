@@ -123,7 +123,7 @@ or BYOC deployments:
   audit-grade attribution should graduate to BYOC where the LLM keys
   live in their account and every call is in their CloudTrail.
 - **Air-gapped deployments.** The managed beta is internet-facing by
-  definition. The `/operations/air-gapped` runbook applies to
+  definition. The [air-gap runbook](/docs/operations/air-gapped) applies to
   self-hosted deployments only.
 - **Custom data residency.** Region selection on the managed plan is
   limited to whatever Fly.io supports; if you need data residency
@@ -154,7 +154,7 @@ that with a small cohort of design partners than with a public price
 sheet that we have to walk back later.
 
 What we **do** care about is making LLM cost visible from day one. The
-[LLM cost dashboard](/dashboard/admin/costs) (rolled out as WS-H1 of
+[LLM cost dashboard](https://app.aisoc.dev/costs) (rolled out as WS-H1 of
 the v1.0 buyer-value plan) tracks every model call with token counts,
 provider, and run cost, scoped per tenant. When the beta exits and
 pricing lands, that dashboard is what we'll bill against — so
@@ -171,12 +171,12 @@ runbooks live here:
   /`fly secrets` / `fly deploy` sequence, and the post-apply
   smoke-test commands.
 - **Rotating the credential vault key** —
-  [`/operations/credentials`](/operations/credentials) documents the
+  [`/operations/credentials`](/docs/operations/credentials) documents the
   `MultiFernet` rotation procedure. Run this once per quarter and
   always before offboarding an operator who had access to the
   current key.
 - **Air-gap parity** — the same code runs air-gapped (see
-  [`/operations/air-gapped`](/operations/air-gapped)). Every feature
+  [`/operations/air-gapped`](/docs/operations/air-gapped)). Every feature
   that ships to the managed instance is regression-tested against
   the air-gapped overlay so a customer can leave the managed
   offering at any time without re-validating the security story.
